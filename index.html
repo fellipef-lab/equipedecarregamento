@@ -421,12 +421,20 @@ function segundaRecente() {
 
 /* ---------- ESTADO ---------- */
 let S = null;
+let migrouDias = false;
+function contaUteis(dias, a, b) { // dias de carregamento entre a e b usando uma lista de dias qualquer
+    if (ymd(a) === ymd(b)) return 0;
+    let n = 0;
+    if (b > a) { for (let x = addDias(a, 1); x <= b; x = addDias(x, 1)) if (dias.includes(x.getDay())) n++; return n; }
+    for (let x = a; x > b; x = addDias(x, -1)) if (dias.includes(x.getDay())) n--;
+    return n;
+}
 function padrao() {
     const times = {};
     IDS.forEach(id => times[id] = { integrantes: (INTEGRANTES_INICIAIS[id] || []).slice(), lider: '', avarias: [] });
     return {
-        v: 9, times,
-        config: { base: { data: ymd(segundaRecente()), passo: 1 }, dias: [1, 2, 3, 4, 5, 6] },
+        v: 11, times,
+        config: { base: { data: ymd(segundaRecente()), passo: 1 }, dias: [1, 2, 3, 4, 5], feriados: {}, feriadosOff: [] }, // só seg–sex; feriados: extras {data:nome}; feriadosOff: feriados automáticos em que TRABALHA
         manual: { data: '', t: {} },
         usuarios: { admin: { hash: hashSenha('admin', 'admin123'), role: 'admin' } }
     };
@@ -446,6 +454,24 @@ function norm(r) {
         if (r.config.base && r.config.base.data) out.config.base = { data: r.config.base.data, passo: Math.min(6, Math.max(1, +r.config.base.passo || 1)) };
         const dias = toArr(r.config.dias).map(Number).filter(n => n >= 0 && n <= 6);
         if (dias.length) out.config.dias = dias;
+        if (r.config.feriados && typeof r.config.feriados === 'object' && !Array.isArray(r.config.feriados)) {
+            Object.keys(r.config.feriados).forEach(k => { if (/^\d{4}-\d{2}-\d{2}$/.test(k)) out.config.feriados[k] = String(r.config.feriados[k] || 'Feriado'); });
+        }
+        out.config.feriadosOff = toArr(r.config.feriadosOff).map(String);
+    }
+    // MIGRAÇÃO v11: sábado/domingo e feriados saem do rodízio sem mudar a equipe de hoje
+    if (r.config && !(+r.v >= 11)) {
+        try {
+            const antigos = out.config.dias.slice(), base = out.config.base, h = new Date();
+            const dN = (+r.v >= 10) ? antigos.slice() : [1, 2, 3, 4, 5];
+            let ref = new Date(h.getFullYear(), h.getMonth(), h.getDate());
+            for (let i = 0; i < 40 && !(dN.includes(ref.getDay()) && !feriadoDe(ref, out.config)); i++) ref = addDias(ref, -1); // último dia de trabalho
+            const n = contaUteis(antigos, parseYmd(base.data), ref);
+            const passo = ((((base.passo - 1 + n) % 6) + 6) % 6) + 1;
+            out.config.dias = dN;
+            out.config.base = { data: ymd(ref), passo };
+            migrouDias = true;
+        } catch (e) { }
     }
     if (r.manual && r.manual.data) {
         out.manual = { data: r.manual.data, t: (r.manual.t && typeof r.manual.t === 'object') ? Object.assign({}, r.manual.t) : {} };
@@ -467,11 +493,37 @@ function carregarLocal() {
     return padrao();
 }
 
+/* ---------- FERIADOS ---------- */
+function pascoa(a) { // algoritmo de Meeus/Jones/Butcher
+    const A = a % 19, B = Math.floor(a / 100), C = a % 100, D = Math.floor(B / 4), E = B % 4, F = Math.floor((B + 8) / 25),
+        G = Math.floor((B - F + 1) / 3), H = (19 * A + B - D - G + 15) % 30, I = Math.floor(C / 4), K = C % 4,
+        L = (32 + 2 * E + 2 * I - H - K) % 7, M = Math.floor((A + 11 * H + 22 * L) / 451),
+        mes = Math.floor((H + L - 7 * M + 114) / 31), dia = ((H + L - 7 * M + 114) % 31) + 1;
+    return new Date(a, mes - 1, dia);
+}
+const _fcache = {};
+function feriadosAno(ano) { // feriados nacionais (e Carnaval / Corpus Christi, pontos facultativos)
+    if (_fcache[ano]) return _fcache[ano];
+    const m = {}, fx = (mm, dd, n) => { m[ano + '-' + String(mm).padStart(2, '0') + '-' + String(dd).padStart(2, '0')] = n; };
+    fx(1, 1, 'Confraternização Universal'); fx(4, 21, 'Tiradentes'); fx(5, 1, 'Dia do Trabalho'); fx(9, 7, 'Independência');
+    fx(10, 12, 'N. Sra. Aparecida'); fx(11, 2, 'Finados'); fx(11, 15, 'Proclamação da República'); fx(11, 20, 'Consciência Negra'); fx(12, 25, 'Natal');
+    const p = pascoa(ano);
+    m[ymd(addDias(p, -48))] = 'Carnaval'; m[ymd(addDias(p, -47))] = 'Carnaval';
+    m[ymd(addDias(p, -2))] = 'Sexta-feira Santa'; m[ymd(addDias(p, 60))] = 'Corpus Christi';
+    return _fcache[ano] = m;
+}
+function feriadoDe(d, cfg) { // nome do feriado (ou null se for dia normal / dia em que trabalha)
+    const k = ymd(d);
+    if (cfg.feriados && cfg.feriados[k]) return cfg.feriados[k];
+    if ((cfg.feriadosOff || []).includes(k)) return null;
+    return feriadosAno(d.getFullYear())[k] || null;
+}
+
 /* ---------- RODÍZIO FG / HJT ---------- */
-const ehUtil = d => S.config.dias.includes(d.getDay());
+const ehUtil = d => S.config.dias.includes(d.getDay()) && !feriadoDe(d, S.config);
 function efetivo(d) {
     let x = d ? new Date(d.getFullYear(), d.getMonth(), d.getDate()) : (() => { const h = new Date(); return new Date(h.getFullYear(), h.getMonth(), h.getDate()); })();
-    for (let i = 0; i < 8 && !ehUtil(x); i++) x = addDias(x, 1);
+    for (let i = 0; i < 40 && !ehUtil(x); i++) x = addDias(x, 1);
     return x;
 }
 function utilEntre(a, b) { // quantos dias de carregamento de a até b (negativo se b < a)
@@ -541,6 +593,7 @@ const Sync = {
             if (JSON.stringify(novo) !== JSON.stringify(S)) {
                 S = novo;
                 try { localStorage.setItem(CHAVE_LOCAL, JSON.stringify(S)); } catch (e) { }
+                gravarMigracao();
                 pedirRender();
             }
         } catch (e) { this.status('erro'); }
@@ -557,6 +610,7 @@ const Sync = {
         setInterval(() => this.atualizar(), 20000); // garantia extra
     }
 };
+function gravarMigracao() { if (migrouDias) { migrouDias = false; salvar('config', 'v'); } }
 function valorEm(p) { return p.split('/').reduce((o, k) => o == null ? o : o[k], S); }
 async function salvar(...paths) {
     try { localStorage.setItem(CHAVE_LOCAL, JSON.stringify(S)); } catch (e) { }
@@ -627,7 +681,12 @@ function renderTopbar() {
     const step = passoDe(ef);
     const fg = [], hjt = [];
     IDS.forEach(id => { if (id === 'reserva') return; const c = caminhaoDe(id).v; if (c === 'FG') fg.push(TEAMS[id].nome); if (c === 'HJT') hjt.push(TEAMS[id].nome); });
-    const dia = (ehHoje ? 'Hoje' : 'Próximo carregamento') + ' · ' + DIAS_NOME[ef.getDay()] + ' ' + fmtData(ef);
+    const h0 = new Date(hojeReal.getFullYear(), hojeReal.getMonth(), hojeReal.getDate());
+    const fer = feriadoDe(h0, S.config);
+    const dia = DIAS_NOME[h0.getDay()] + ', ' + fmtData(h0) + '/' + h0.getFullYear();
+    const sub = ehHoje
+        ? 'Carregamento de hoje · Passo ' + (step + 1) + ' de 6 do rodízio'
+        : (fer ? 'Feriado: ' + fer : DIAS_NOME[h0.getDay()] + ' sem carregamento') + ' · Próximo carregamento: ' + DIAS_NOME[ef.getDay()] + ' ' + fmtData(ef) + ' · Passo ' + (step + 1) + ' de 6';
     const botoes = [];
     if (podeEditar() && temManual()) botoes.push('<button class="btn btn-aviso" onclick="voltarAutomatico()" title="Descarta os ajustes manuais de hoje">↺ Voltar ao automático</button>');
     botoes.push('<button class="btn" onclick="abrirRelatorio(\'todas\')">🖨️ Relatório de avarias</button>');
@@ -640,7 +699,7 @@ function renderTopbar() {
     document.getElementById('topbar').innerHTML = `
         <div class="tb-hoje">
             <span class="tb-dia">📅 ${esc(dia)}</span>
-            <span class="tb-sub">Passo ${step + 1} de 6 do rodízio${temManual() ? ' · <b>ajuste manual ativo</b>' : ''}</span>
+            <span class="tb-sub">${esc(sub)}${temManual() ? ' · <b>ajuste manual ativo</b>' : ''}</span>
         </div>
         <div class="tb-trucks">
             <span class="chip chip-fg"><b>FG</b> ${fg.length ? esc(fg.join(' + ')) : '—'}</span>
@@ -798,8 +857,33 @@ document.getElementById('modal').addEventListener('click', ev => { if (ev.target
 
 /* ----- Rodízio ----- */
 function nomeStep(s) { const r = rodizio(s); return `${TEAMS[r.FG].nome} <b>FG</b> · ${TEAMS[r.HJT].nome} <b>HJT</b>`; }
+let tmpFer = null;
+function renderFer() {
+    const h0 = new Date(), t0 = new Date(h0.getFullYear(), h0.getMonth(), h0.getDate()), lim = addDias(t0, 366);
+    const nomeDia = d => DIAS_CURTO[d.getDay()] + ' ' + fmtData(d);
+    const auto = [];
+    [t0.getFullYear(), t0.getFullYear() + 1].forEach(y => {
+        const m = feriadosAno(y);
+        Object.keys(m).forEach(k => { const d = parseYmd(k); if (d >= t0 && d <= lim && !tmpFer.extra[k]) auto.push([k, m[k]]); });
+    });
+    auto.sort((a, b) => a[0] < b[0] ? -1 : 1);
+    const extras = Object.keys(tmpFer.extra).filter(k => parseYmd(k) >= t0).sort();
+    let h = auto.map(([k, n]) => `<label class="chk" style="display:flex;margin:3px 0"><input type="checkbox" ${tmpFer.off.has(k) ? '' : 'checked'} onchange="toggleFer('${k}', this.checked)"> <span>${nomeDia(parseYmd(k))} — ${esc(n)}</span></label>`).join('');
+    h += extras.map(k => `<div class="chk" style="display:flex;justify-content:space-between;margin:3px 0"><span>${nomeDia(parseYmd(k))} — ${esc(tmpFer.extra[k])} <i style="color:#9aa7b4">(adicionado)</i></span><button class="btn-acao btn-remover" onclick="remFerExtra('${k}')" title="Remover">✕</button></div>`).join('');
+    document.getElementById('mFerLista').innerHTML = h || '<p class="m-info">Nenhum feriado nos próximos 12 meses.</p>';
+}
+function toggleFer(k, naoTrabalha) { if (naoTrabalha) tmpFer.off.delete(k); else tmpFer.off.add(k); }
+function remFerExtra(k) { delete tmpFer.extra[k]; renderFer(); }
+function addFer() {
+    const d = document.getElementById('mFerData').value, n = document.getElementById('mFerNome').value.trim() || 'Feriado';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { alert('Escolha a data do feriado.'); return; }
+    tmpFer.extra[d] = n; tmpFer.off.delete(d);
+    document.getElementById('mFerData').value = ''; document.getElementById('mFerNome').value = '';
+    renderFer();
+}
 function abrirRodizio() {
     if (!ehAdmin()) return;
+    tmpFer = { extra: Object.assign({}, S.config.feriados || {}), off: new Set(S.config.feriadosOff || []) };
     const atual = passoDe(efetivo());
     let linhas = '';
     for (let s = 0; s < 6; s++) linhas += `<tr><td>${s + 1}</td><td>${nomeStep(s)}</td></tr>`;
@@ -811,15 +895,23 @@ function abrirRodizio() {
         <table class="m-tab"><tr><th>Passo</th><th>Quem carrega</th></tr>${linhas}</table>
         <label class="m-label">Dias em que há carregamento</label>
         <div id="mDias" class="chk-linha">${dias}</div>
+        <label class="m-label">Feriados (marcado = não há carregamento)</label>
+        <div id="mFerLista" style="max-height:190px;overflow:auto;border:1px solid #243140;border-radius:6px;padding:4px 8px"></div>
+        <div style="display:grid;grid-template-columns:140px 1fr auto;gap:6px;margin-top:8px">
+            <input id="mFerData" type="date" class="m-input"><input id="mFerNome" class="m-input" placeholder="Nome (ex.: feriado municipal)"><button class="btn" onclick="addFer()">+ Adicionar</button>
+        </div>
+        <p class="m-info">Os nacionais já entram sozinhos (inclui Carnaval e Corpus Christi, que são pontos facultativos: desmarque se vocês trabalham). Feriados da sua cidade ou do estado, adicione acima.</p>
         <label class="m-label">O próximo dia de carregamento está no passo:</label>
         <select id="mPasso" class="m-input">${opts}</select>
         <div class="m-acoes"><button class="btn btn-ok" onclick="salvarRodizio()">Salvar</button><button class="btn" onclick="fecharModal()">Cancelar</button></div>`);
+    renderFer();
 }
 function salvarRodizio() {
     const dias = [...document.querySelectorAll('#mDias input:checked')].map(i => +i.value);
     if (!dias.length) { alert('Marque pelo menos um dia.'); return; }
     const passo = +document.getElementById('mPasso').value;
     S.config.dias = dias;
+    S.config.feriados = tmpFer.extra; S.config.feriadosOff = [...tmpFer.off];
     S.config.base = { data: ymd(efetivo()), passo };
     salvar('config'); fecharModal(); renderAll();
 }
@@ -1005,6 +1097,7 @@ async function iniciar() {
         Sync.status('local');
         try { localStorage.setItem(CHAVE_LOCAL, JSON.stringify(S)); } catch (e) { }
     }
+    gravarMigracao();
     renderAll();
     diaRenderizado = ymd(efetivo());
     setInterval(() => { const d = ymd(efetivo()) + ymd(new Date()); if (d !== diaRenderizado) { diaRenderizado = d; pedirRender(); } }, 30000);
