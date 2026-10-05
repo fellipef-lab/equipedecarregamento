@@ -1061,8 +1061,8 @@ function abrirAvarias(id, edId) {
             <input id="avProd" class="m-input full" placeholder="Mercadoria avariada" value="${a ? esc(a.produto) : ''}">
             <input id="avObs" class="m-input full" placeholder="Observação (opcional)" value="${a ? esc(a.obs) : ''}">
             <div class="full av-foto-btns">
-                <label class="btn">📷 Tirar foto<input type="file" accept="image/*" capture="environment" hidden onchange="escolherFotoAv(this)"></label>
-                <label class="btn">🖼️ Escolher da galeria<input type="file" accept="image/*" hidden onchange="escolherFotoAv(this)"></label>
+                <button type="button" class="btn" onclick="abrirCamera()">📷 Tirar foto</button>
+                <button type="button" class="btn" onclick="inputFoto('gal')">🖼️ Galeria</button>
             </div>
             <div id="avPrev" class="full" data-eid="${a && a.foto ? a.id : ''}"></div>
             <button class="btn btn-ok full" onclick="salvarAv('${id}','${a ? a.id : ''}')">${a ? 'Salvar alteração' : 'Adicionar'}</button>
@@ -1116,10 +1116,59 @@ function reduzirImagem(file, max = 1000, q = 0.65) { // redimensiona e comprime 
     });
 }
 async function escolherFotoAv(inp) {
-    const f = inp.files && inp.files[0]; inp.value = '';
+    const f = inp.files && inp.files[0];
     if (!f) return;
     try { avFoto = { novo: await reduzirImagem(f), remover: false }; atualizarPrevAv(); }
     catch (e) { alert('Não consegui ler essa foto. Tente outra.'); }
+    inp.value = '';
+}
+/* campos de arquivo fixos na página (não são recriados quando a janela atualiza) */
+function criarInputFoto(id, cam) {
+    const i = document.createElement('input');
+    i.type = 'file'; i.accept = 'image/*'; i.id = id;
+    if (cam) i.setAttribute('capture', 'environment');
+    i.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+    i.addEventListener('change', () => escolherFotoAv(i));
+    document.body.appendChild(i);
+}
+criarInputFoto('fotoInpCam', true); criarInputFoto('fotoInpGal', false);
+function inputFoto(t) { const i = document.getElementById(t === 'cam' ? 'fotoInpCam' : 'fotoInpGal'); i.value = ''; i.click(); }
+
+/* câmera dentro do próprio app (abre direto, sem passar pela galeria) */
+let camStream = null;
+function fecharCamera() {
+    if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+    const o = document.getElementById('camOverlay'); if (o) o.remove();
+}
+async function abrirCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { inputFoto('cam'); return; }
+    try {
+        camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    } catch (e) {
+        alert('Não consegui abrir a câmera aqui (permissão negada?). Vou abrir a câmera do celular.');
+        inputFoto('cam'); return;
+    }
+    const o = document.createElement('div');
+    o.id = 'camOverlay';
+    o.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100000;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:10px;box-sizing:border-box';
+    o.innerHTML = `<video id="camVideo" autoplay playsinline muted style="width:100%;flex:1;min-height:0;object-fit:contain;background:#000"></video>
+        <div style="display:flex;gap:12px;padding:12px 0;width:100%;max-width:420px">
+            <button type="button" class="btn" style="flex:1" onclick="fecharCamera()">Cancelar</button>
+            <button type="button" class="btn btn-ok" style="flex:2;font-size:16px" onclick="capturarFoto()">📸 Capturar</button>
+        </div>`;
+    document.body.appendChild(o);
+    const v = document.getElementById('camVideo'); v.srcObject = camStream;
+    try { await v.play(); } catch (e) { }
+}
+function capturarFoto() {
+    const v = document.getElementById('camVideo');
+    if (!v || !v.videoWidth) { alert('A câmera ainda está carregando. Tente de novo.'); return; }
+    const k = Math.min(1, 1000 / Math.max(v.videoWidth, v.videoHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    avFoto = { novo: c.toDataURL('image/jpeg', 0.65), remover: false };
+    fecharCamera(); atualizarPrevAv();
 }
 function removerFotoAv() { avFoto = { novo: null, remover: true }; atualizarPrevAv(); }
 async function atualizarPrevAv() {
