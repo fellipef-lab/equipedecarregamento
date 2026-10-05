@@ -304,9 +304,15 @@
             <h2>Equipes de Carregamento</h2>
             <input type="text" id="usuario" placeholder="Usuário" autocomplete="username" autocapitalize="none">
             <br>
-            <input type="password" id="senha" placeholder="Senha" autocomplete="current-password">
+            <input type="password" id="senha" placeholder="Senha" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
             <br>
             <button onclick="fazerLogin()">Entrar</button>
+            <p id="loginMsg" style="font-size:13px;line-height:1.4;margin:14px 0 0;min-height:18px;color:#fca311">Carregando…</p>
+            <a href="#" onclick="document.getElementById('loginConexao').style.display='block';return false" style="font-size:12px;color:#9aa7b4">Não consegue entrar? Conectar ao banco online</a>
+            <div id="loginConexao" style="display:none;margin-top:10px">
+                <input type="text" id="loginDbUrl" placeholder="https://seu-projeto-default-rtdb.firebaseio.com" autocapitalize="none" autocorrect="off" spellcheck="false">
+                <button onclick="conectarPeloLogin()">Conectar</button>
+            </div>
         </div>
     </div>
 
@@ -341,6 +347,16 @@
    Deixando vazio, o app funciona normalmente, mas só neste aparelho.
    ===================================================================== */
 const DB_URL = '';
+// Link com ?db=ENDERECO configura o aparelho sozinho (o app gera esse link em 🔌 Conexão)
+(function () {
+    try {
+        const q = new URLSearchParams(location.search).get('db');
+        if (q && /^https:\/\/.+/i.test(q.trim())) {
+            localStorage.setItem('dbUrl', q.trim());
+            history.replaceState(null, '', location.pathname + location.hash);
+        }
+    } catch (e) { }
+})();
 
 const CHAVE_LOCAL = 'appEquipesV9';
 const IDS = ['reserva', 'leao', 'tigre', 'tubarao', 'aguia', 'falcao', 'crocodilo'];
@@ -638,15 +654,34 @@ const papel = () => { const u = usuarioAtual(); return u ? u.role : null; };
 const podeEditar = () => ['admin', 'editor'].includes(papel());
 const ehAdmin = () => papel() === 'admin';
 
+let pronto = false; // só deixa entrar depois de carregar os usuários do banco
+function loginAviso(txt) { const e = document.getElementById('loginMsg'); if (e) e.textContent = txt || ''; }
+function avisoConexao() {
+    if (!Sync.url) return '⚠ Este aparelho NÃO está conectado ao banco online, por isso os usuários criados em outro aparelho não existem aqui. Peça o link de acesso ao administrador, ou toque em "Não consegue entrar?" abaixo e cole o endereço do banco.';
+    if (Sync.estado === 'erro') return '⚠ Sem conexão com o banco online. Verifique a internet e tente de novo.';
+    return '';
+}
 function fazerLogin() {
+    if (!pronto) { loginAviso('Carregando os dados, aguarde alguns segundos e toque em Entrar de novo…'); return; }
     const login = document.getElementById('usuario').value.trim().toLowerCase();
     const senha = document.getElementById('senha').value;
     const u = S.usuarios[login];
-    if (u && u.hash === hashSenha(login, senha)) {
+    const ok = u && (u.hash === hashSenha(login, senha) || u.hash === hashSenha(login, senha.trim()));
+    if (ok) {
         localStorage.setItem('sessao', JSON.stringify({ u: login, h: u.hash }));
         document.getElementById('senha').value = '';
+        loginAviso('');
         renderAll();
-    } else { alert('Usuário ou senha incorretos! Tente novamente.'); }
+    } else {
+        const av = avisoConexao();
+        loginAviso(av);
+        alert(av && !u ? av : 'Usuário ou senha incorretos! Tente novamente.');
+    }
+}
+function conectarPeloLogin() {
+    const v = document.getElementById('loginDbUrl').value.trim();
+    if (!/^https:\/\/.+/i.test(v)) { alert('O endereço deve começar com https://'); return; }
+    localStorage.setItem('dbUrl', v); location.reload();
 }
 function fazerLogout() { localStorage.removeItem('sessao'); location.reload(); }
 ['usuario', 'senha'].forEach(id => document.getElementById(id).addEventListener('keypress', ev => {
@@ -667,6 +702,7 @@ function renderAll() {
     renderPendente = false;
     const u = usuarioAtual();
     document.getElementById('loginOverlay').style.display = u ? 'none' : 'flex';
+    if (!u) loginAviso(avisoConexao());
     document.body.dataset.role = u ? u.role : '';
     document.body.classList.toggle('ro', !!u && !podeEditar());
     renderTopbar();
@@ -978,8 +1014,16 @@ function abrirConexao() {
         <p class="m-info">Estado atual: <b>${Sync.url ? 'conectado ao banco online' : 'só neste aparelho (sem banco online)'}</b>.</p>
         <p class="m-info">Cole o endereço do seu Firebase Realtime Database para as mudanças aparecerem na hora em todos os celulares/computadores.</p>
         <input id="dbUrl" class="m-input" placeholder="https://seu-projeto-default-rtdb.firebaseio.com" value="${esc(Sync.url)}">
-        <p class="m-info">Dica: para valer em todos os aparelhos, cole o mesmo endereço também na linha <code>const DB_URL</code> no começo do código do app.</p>
+        ${Sync.url ? `<label class="m-label">Link para mandar aos celulares (já conecta sozinho)</label>
+        <input id="linkAcesso" class="m-input" readonly onclick="this.select()" value="${esc(location.href.split('?')[0].split('#')[0] + '?db=' + encodeURIComponent(Sync.url))}">
+        <div class="m-acoes"><button class="btn" onclick="copiarLinkAcesso()">📋 Copiar link</button></div>
+        <p class="m-info">Mande SEMPRE este link (e não o link comum): sem ele, o celular não enxerga os usuários criados aqui e o login falha.</p>` : ''}
+        <p class="m-info">Opcional: cole o mesmo endereço na linha <code>const DB_URL</code> no começo do código do app; assim o link comum já funciona em qualquer aparelho.</p>
         <div class="m-acoes"><button class="btn btn-ok" onclick="salvarConexao()">Salvar e recarregar</button><button class="btn" onclick="fecharModal()">Cancelar</button></div>`);
+}
+function copiarLinkAcesso() {
+    const e = document.getElementById('linkAcesso'); e.select();
+    try { navigator.clipboard.writeText(e.value).then(() => alert('Link copiado!'), () => document.execCommand('copy')); } catch (x) { document.execCommand('copy'); }
 }
 function salvarConexao() {
     const v = document.getElementById('dbUrl').value.trim();
@@ -1098,6 +1142,8 @@ async function iniciar() {
         try { localStorage.setItem(CHAVE_LOCAL, JSON.stringify(S)); } catch (e) { }
     }
     gravarMigracao();
+    pronto = true;
+    loginAviso(avisoConexao());
     renderAll();
     diaRenderizado = ymd(efetivo());
     setInterval(() => { const d = ymd(efetivo()) + ymd(new Date()); if (d !== diaRenderizado) { diaRenderizado = d; pedirRender(); } }, 30000);
