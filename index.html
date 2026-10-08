@@ -273,6 +273,9 @@
         .lid .man { color: #fca311; font-size: 11px; margin-left: 4px; }
         body.ro .lid-ed { display: none; }
 
+        .equipe-card.campea { animation: pulsaCarga 1.8s ease-in-out infinite; }
+        @keyframes pulsaCarga { 0%, 100% { box-shadow: 0 0 0 3px #ffd24a, 0 0 14px 2px rgba(255,210,74,.5); } 50% { box-shadow: 0 0 0 5px #ffd24a, 0 0 30px 8px rgba(255,210,74,.85); } }
+        .carregando-banner { background: linear-gradient(90deg, #ffd24a, #ffb300); color: #1b1b1b; font-weight: 800; text-align: center; padding: 6px 8px; border-radius: 8px; margin-bottom: 8px; }
         .rk-bar{height:10px;border-radius:5px;min-width:2px}
         .truck-badge.fixa{background:#c8702a;color:#fff;cursor:default}
         /* modo só-visualizar */
@@ -820,6 +823,7 @@ function renderizarBoard() {
     const board = document.getElementById('board');
     const edita = podeEditar();
     board.innerHTML = '';
+    const topS = topoPeriodo('semana'), topM = topoPeriodo('mes');
     const ordem = IDS.slice().sort((a, b) => (a === 'reserva') - (b === 'reserva'));
     for (const id of ordem) {
         const meta = TEAMS[id], dados = S.times[id];
@@ -836,11 +840,15 @@ function renderizarBoard() {
                 badge = `<button class="truck-badge ${cls}${cam.manual ? ' manual' : ''}" ${edita ? `onclick="abrirMenuCam(event,'${id}')"` : 'disabled'} title="${edita ? 'Clique para escolher FG, HJT ou deixar em branco' : 'Caminhão de hoje'}">${ICON_TRUCK}<b>${rotulo}</b></button>`;
             }
         }
+        const sem = topS.includes(id), mes = topM.includes(id);
+        if (sem || mes) card.className += ' campea';
+        const banner = (sem || mes) ? `<div class="carregando-banner">🏆 ${[sem ? '1º DA SEMANA' : '', mes ? '1º DO MÊS' : ''].filter(Boolean).join(' · ')}</div>` : '';
         let h = `<div class="card-in">
             ${id !== 'reserva' ? '<div class="art"></div>' : ''}
             ${badge}
             ${id === 'reserva' ? `<div class="titulo-wrap"><h2 class="equipe-nome-grande">${meta.nome}</h2><span class="equipe-slogan">${meta.slogan}</span></div>` : ''}
             <div class="card-body">
+                ${banner}
                 <div class="integrantes-titulo">${ICON_GRUPO}<span>INTEGRANTES</span></div>
                 <div class="lista-integrantes" id="${id}" ondrop="soltar(event)" ondragover="permitirSoltar(event)">`;
         dados.integrantes.forEach((nome, i) => {
@@ -1396,18 +1404,31 @@ function noPeriodo(iso, per) {
     if (per === 'semana') { const sg = segundaRecente(); return d >= sg && d < addDias(sg, 7); }
     return ymd(d) === ymd(h);
 }
+function topoPeriodo(per) { // equipe(s) com mais carros finalizados no período (só se > 0)
+    const c = {}; idEquipes().forEach(i => c[i] = 0);
+    cargasL().forEach(x => { if (x.fim && c[x.eq] != null && noPeriodo(x.fim, per)) c[x.eq]++; });
+    const m = Math.max(...Object.values(c));
+    return m > 0 ? idEquipes().filter(i => c[i] === m) : [];
+}
+function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0'); }
+function fmtCron(ms) { const t = Math.max(0, Math.floor(ms / 1000)), p = n => String(n).padStart(2, '0'), h = Math.floor(t / 3600); return (h ? h + ':' : '') + p(Math.floor(t % 3600 / 60)) + ':' + p(t % 60); }
+setInterval(() => document.querySelectorAll('.cron[data-ini]').forEach(e => { e.textContent = fmtCron(Date.now() - new Date(e.dataset.ini)); }), 1000);
 function renderCarros() {
     const box = document.getElementById('carros'); if (!box || !usuarioAtual()) return;
     const ed = podeEditar(), eqs = idEquipes(), L = cargasL(), frotaL = Object.values(S.carros || {});
     const opts = sel => '<option value="">Equipe…</option>' + eqs.map(i => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(TEAMS[i].nome)}</option>`).join('');
     const abertas = L.filter(c => !c.fim || !TEAMS[c.eq]).sort((a, b) => (a.ini || a.fim) < (b.ini || b.fim) ? -1 : 1);
-    const andam = abertas.map(c => `<div class="ld"><span class="ld-n">🚛 ${esc(c.carro)} <small style="color:#9aa7b4">${c.fim ? 'finalizado · escolha a equipe' : 'desde ' + hhmm(c.ini)}${c.via === 'coletor' ? ' · coletor' : ''}</small></span>`
+    const andam = abertas.map(c => `<div class="ld"><span class="ld-n">🚛 ${esc(c.carro)} <small style="color:#9aa7b4">${c.fim ? 'finalizado · escolha a equipe' : 'desde ' + hhmm(c.ini) + (c.ini ? ' · ⏱ <span class="cron" data-ini="' + c.ini + '"></span>' : '')}${c.via === 'coletor' ? ' · coletor' : ''}</small></span>`
         + (ed ? `<select class="m-input" style="width:120px;padding:4px" onchange="eqCarga('${c.id}',this.value)">${opts(c.eq)}</select>${c.fim ? '' : `<button class="ld-st" onclick="finalizarCarga('${c.id}')">✔ Finalizar</button>`}<span class="ld-ac"><button class="x" title="Cancelar" onclick="cancelarCarga('${c.id}')">✕</button></span>`
             : `<span style="color:${COR_EQ[c.eq] || '#aaa'};font-weight:700">${esc((TEAMS[c.eq] || {}).nome || '—')}</span>`) + '</div>').join('') || '<p class="m-info">Nenhum carro em carregamento agora.</p>';
     const fin = L.filter(c => c.fim && TEAMS[c.eq] && noPeriodo(c.fim, rkPer));
     const cont = {}; eqs.forEach(i => cont[i] = 0); fin.forEach(c => cont[c.eq]++);
+    const dur = c => c.ini && c.fim ? new Date(c.fim) - new Date(c.ini) : null, tempos = {};
+    eqs.forEach(i => tempos[i] = []); fin.forEach(c => { const d = dur(c); if (d != null && d >= 0) tempos[c.eq].push(d); });
+    const medio = i => tempos[i].length ? fmtDur(tempos[i].reduce((a, b) => a + b, 0) / tempos[i].length) : '—';
+    const feitos = L.filter(c => c.fim && TEAMS[c.eq] && noPeriodo(c.fim, 'dia')).sort((a, b) => a.fim < b.fim ? 1 : -1).slice(0, 10).map(c => { const d = dur(c); return `<div class="ld"><span class="ld-n">✔ ${esc(c.carro)} <small style="color:#9aa7b4">${hhmm(c.ini)} → ${hhmm(c.fim)}</small></span><span style="color:${COR_EQ[c.eq]};font-weight:700">${esc(TEAMS[c.eq].nome)}</span><b>${d != null && d >= 0 ? fmtDur(d) : '—'}</b></div>`; }).join('');
     const ord = eqs.slice().sort((a, b) => cont[b] - cont[a]), max = Math.max(1, cont[ord[0]]);
-    const rk = ord.map((i, p) => `<tr><td>${cont[i] && p < 3 ? ['🥇', '🥈', '🥉'][p] : (p + 1) + 'º'}</td><td><span class="pt" style="background:${COR_EQ[i]}"></span>${esc(TEAMS[i].nome)}</td><td style="width:45%"><div class="rk-bar" style="width:${cont[i] / max * 100}%;background:${COR_EQ[i]}"></div></td><td><b>${cont[i]}</b></td></tr>`).join('');
+    const rk = ord.map((i, p) => `<tr><td>${cont[i] && p < 3 ? ['🥇', '🥈', '🥉'][p] : (p + 1) + 'º'}</td><td><span class="pt" style="background:${COR_EQ[i]}"></span>${esc(TEAMS[i].nome)}</td><td style="width:45%"><div class="rk-bar" style="width:${cont[i] / max * 100}%;background:${COR_EQ[i]}"></div></td><td><b>${cont[i]}</b></td><td style="color:#9aa7b4;white-space:nowrap">⏱ ${medio(i)}</td></tr>`).join('');
     const tabs = [['dia', 'Hoje'], ['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano']].map(([k, t]) => `<button class="btn${rkPer === k ? ' btn-ok' : ''}" onclick="rkPer='${k}';renderCarros()">${t}</button>`).join('');
     const lista = frotaL.filter(c => c.c).map(c => `<option value="${esc(c.n)}">`).join('');
     const form = ed ? `<h3 style="margin-top:14px">Registrar carro</h3>
@@ -1415,8 +1436,8 @@ function renderCarros() {
         <div class="ld-add"><button onclick="registrarCarga(false)">▶ Iniciar</button><button onclick="registrarCarga(true)">✔ Já finalizado</button><button onclick="abrirFrota()">🚛 Frota</button></div>` : '';
     box.innerHTML = `<h2>🏆 Carros e ranking</h2>
         <div class="sub">Cada carro finalizado soma 1 para a equipe · frota: ${frotaL.filter(c => c.c).length} que carregamos, ${frotaL.filter(c => !c.c).length} que não carregamos</div>
-        <div class="lid-cols"><div><h3>Em carregamento</h3>${andam}${form}</div>
-        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros</div></div></div>`;
+        <div class="lid-cols"><div><h3>Em carregamento</h3>${andam}${form}<h3 style="margin-top:14px">Finalizados hoje</h3>${feitos || '<p class="m-info">Nenhum ainda.</p>'}</div>
+        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros · ⏱ = tempo médio por carro</div></div></div>`;
 }
 function eqCarga(id, v) { if (!podeEditar() || !S.cargas[id]) return; S.cargas[id].eq = v; salvar('cargas/' + id); renderAll(); }
 function finalizarCarga(id) {
