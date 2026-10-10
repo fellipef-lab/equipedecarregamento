@@ -273,9 +273,6 @@
         .lid .man { color: #fca311; font-size: 11px; margin-left: 4px; }
         body.ro .lid-ed { display: none; }
 
-        .equipe-card.campea { animation: pulsaCarga 1.8s ease-in-out infinite; }
-        @keyframes pulsaCarga { 0%, 100% { box-shadow: 0 0 0 3px #ffd24a, 0 0 14px 2px rgba(255,210,74,.5); } 50% { box-shadow: 0 0 0 5px #ffd24a, 0 0 30px 8px rgba(255,210,74,.85); } }
-        .carregando-banner { background: linear-gradient(90deg, #ffd24a, #ffb300); color: #1b1b1b; font-weight: 800; text-align: center; padding: 6px 8px; border-radius: 8px; margin-bottom: 8px; }
         .rk-bar{height:10px;border-radius:5px;min-width:2px}
         .truck-badge.fixa{background:#c8702a;color:#fff;cursor:default}
         /* modo só-visualizar */
@@ -319,9 +316,16 @@
         .av-form .full { grid-column: 1 / -1; }
         .av-foto-btns { display: flex; gap: 8px; flex-wrap: wrap; }
         .av-foto-btns .btn { cursor: pointer; text-align: center; }
-        #avPrev img { max-width: 100%; max-height: 220px; border-radius: 8px; margin: 4px 0; border: 1px solid #3a4655; }
-        .av-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid #3a4655; margin-top: 4px; cursor: zoom-in; display: block; }
+        .av-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        @media (max-width: 420px) { .av-slots { grid-template-columns: 1fr; } }
+        .av-slot { border: 1px dashed #3a4655; border-radius: 10px; padding: 8px; display: grid; gap: 6px; align-content: start; }
+        .av-slot b { font-size: 13px; } .av-slot small { color: #9aa7b4; font-size: 11px; line-height: 1.3; }
+        .av-slot .av-foto-btns .btn { flex: 1; padding-left: 6px; padding-right: 6px; }
+        .av-prev img { max-width: 100%; max-height: 180px; border-radius: 8px; margin: 2px 0; border: 1px solid #3a4655; }
+        .av-thumbs { display: flex; gap: 6px; margin-top: 4px; }
+        .av-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid #3a4655; cursor: zoom-in; display: block; }
         #printArea img.rp-foto { max-width: 130px; max-height: 95px; object-fit: cover; }
+        #printArea .rp-fotos { display: flex; gap: 6px; } #printArea .rp-fotos figure { margin: 0; text-align: center; font-size: 9px; color: #555; }
         #printArea { display: none; }
         @page { margin: 12mm; }
         @media print {
@@ -518,7 +522,7 @@ function norm(r) {
         const t = r.times && r.times[id];
         out.times[id].integrantes = t ? toArr(t.integrantes).map(String) : (id === 'urso' ? INTEGRANTES_INICIAIS.urso.slice() : []);
         out.times[id].lider = (t && t.lider) || '';
-        out.times[id].avarias = t ? toArr(t.avarias).filter(a => a && typeof a === 'object').map(a => ({ id: String(a.id || ''), data: String(a.data || ''), produto: String(a.produto || ''), qtd: +a.qtd || 0, obs: String(a.obs || ''), foto: !!a.foto })) : [];
+        out.times[id].avarias = t ? toArr(t.avarias).filter(a => a && typeof a === 'object').map(a => ({ id: String(a.id || ''), data: String(a.data || ''), produto: String(a.produto || ''), qtd: +a.qtd || 0, obs: String(a.obs || ''), foto: !!a.foto, foto2: !!a.foto2 })) : [];
     });
     if (!r.times) IDS.forEach(id => out.times[id].integrantes = (INTEGRANTES_INICIAIS[id] || []).slice());
     if (r.config) {
@@ -823,7 +827,6 @@ function renderizarBoard() {
     const board = document.getElementById('board');
     const edita = podeEditar();
     board.innerHTML = '';
-    const topS = topoPeriodo('semana'), topM = topoPeriodo('mes');
     const ordem = IDS.slice().sort((a, b) => (a === 'reserva') - (b === 'reserva'));
     for (const id of ordem) {
         const meta = TEAMS[id], dados = S.times[id];
@@ -840,15 +843,11 @@ function renderizarBoard() {
                 badge = `<button class="truck-badge ${cls}${cam.manual ? ' manual' : ''}" ${edita ? `onclick="abrirMenuCam(event,'${id}')"` : 'disabled'} title="${edita ? 'Clique para escolher FG, HJT ou deixar em branco' : 'Caminhão de hoje'}">${ICON_TRUCK}<b>${rotulo}</b></button>`;
             }
         }
-        const sem = topS.includes(id), mes = topM.includes(id);
-        if (sem || mes) card.className += ' campea';
-        const banner = (sem || mes) ? `<div class="carregando-banner">🏆 ${[sem ? '1º DA SEMANA' : '', mes ? '1º DO MÊS' : ''].filter(Boolean).join(' · ')}</div>` : '';
         let h = `<div class="card-in">
             ${id !== 'reserva' ? '<div class="art"></div>' : ''}
             ${badge}
             ${id === 'reserva' ? `<div class="titulo-wrap"><h2 class="equipe-nome-grande">${meta.nome}</h2><span class="equipe-slogan">${meta.slogan}</span></div>` : ''}
             <div class="card-body">
-                ${banner}
                 <div class="integrantes-titulo">${ICON_GRUPO}<span>INTEGRANTES</span></div>
                 <div class="lista-integrantes" id="${id}" ondrop="soltar(event)" ondragover="permitirSoltar(event)">`;
         dados.integrantes.forEach((nome, i) => {
@@ -1183,12 +1182,19 @@ const fmtBR = d => { if (!d) return '—'; const [y, m, x] = d.split('-'); retur
 const idEquipes = () => IDS.filter(i => i !== 'reserva');
 const somaUn = L => L.reduce((t, a) => t + a.qtd, 0);
 
+/* Duas fotos por avaria: 1 = a avaria (foto que já existia); 2 = código de barras + produto inteiro (fica em /fotos/<id>_2) */
+const FOTOS_AV = { 1: { titulo: '📷 Foto da avaria', dica: 'Mostre bem o dano.' }, 2: { titulo: '🏷️ Código de barras + produto inteiro', dica: 'Na mesma foto: o produto inteiro com a etiqueta do código de barras legível.' } };
+const chaveFoto = (aid, n) => n === 2 ? aid + '_2' : aid;
+const temFotoN = (x, n) => n === 2 ? !!x.foto2 : !!x.foto;
+function thumbsAv(x) {
+    return [1, 2].filter(n => temFotoN(x, n)).map(n => `<img class="av-thumb" data-foto="${chaveFoto(x.id, n)}" alt="${n === 2 ? 'Código de barras + produto' : 'Avaria'}" title="${n === 2 ? 'Código de barras + produto' : 'Avaria'}" onclick="verFoto('${chaveFoto(x.id, n)}')">`).join('');
+}
 function abrirAvarias(id, edId) {
-    avFoto = { novo: null, remover: false };
+    avFotos = { 1: { novo: null, remover: false }, 2: { novo: null, remover: false } };
     const t = S.times[id], ed = podeEditar();
     const a = edId ? t.avarias.find(x => x.id === edId) : null;
     const lista = t.avarias.slice().sort((x, y) => y.data.localeCompare(x.data));
-    const linhas = lista.map(x => `<tr><td>${fmtBR(x.data)}</td><td>${esc(x.produto)}${x.obs ? '<br><i style="color:#9aa7b4">' + esc(x.obs) + '</i>' : ''}${x.foto ? `<img class="av-thumb" data-foto="${x.id}" alt="Foto" onclick="verFoto('${x.id}')">` : ''}</td><td>${x.qtd}</td>${ed ? `<td style="white-space:nowrap"><button class="btn-acao" onclick="abrirAvarias('${id}','${x.id}')">✏️</button> <button class="btn-acao btn-remover" onclick="removerAv('${id}','${x.id}')">x</button></td>` : ''}</tr>`).join('');
+    const linhas = lista.map(x => `<tr><td>${fmtBR(x.data)}</td><td>${esc(x.produto)}${x.obs ? '<br><i style="color:#9aa7b4">' + esc(x.obs) + '</i>' : ''}${x.foto || x.foto2 ? `<div class="av-thumbs">${thumbsAv(x)}</div>` : ''}</td><td>${x.qtd}</td>${ed ? `<td style="white-space:nowrap"><button class="btn-acao" onclick="abrirAvarias('${id}','${x.id}')">✏️</button> <button class="btn-acao btn-remover" onclick="removerAv('${id}','${x.id}')">x</button></td>` : ''}</tr>`).join('');
     const tabela = lista.length
         ? `<table class="m-tab"><tr><th>Data</th><th>Mercadoria</th><th>Qtd</th>${ed ? '<th></th>' : ''}</tr>${linhas}<tr><th colspan="2">Total</th><th colspan="${ed ? 2 : 1}">${somaUn(lista)}</th></tr></table>`
         : '<p class="m-info">Nenhuma avaria registrada para esta equipe.</p>';
@@ -1198,11 +1204,16 @@ function abrirAvarias(id, edId) {
             <input id="avQtd" type="number" min="1" class="m-input" placeholder="Qtd" value="${a ? a.qtd : 1}">
             <input id="avProd" class="m-input full" placeholder="Mercadoria avariada" value="${a ? esc(a.produto) : ''}">
             <input id="avObs" class="m-input full" placeholder="Observação (opcional)" value="${a ? esc(a.obs) : ''}">
-            <div class="full av-foto-btns">
-                <button type="button" class="btn" onclick="abrirCamera()">📷 Tirar foto</button>
-                <button type="button" class="btn" onclick="inputFoto('gal')">🖼️ Galeria</button>
+            <div class="full av-slots">${[1, 2].map(n => `
+                <div class="av-slot">
+                    <b>${FOTOS_AV[n].titulo}</b><small>${FOTOS_AV[n].dica}</small>
+                    <div class="av-foto-btns">
+                        <button type="button" class="btn" onclick="abrirCamera(${n})">📷 Tirar foto</button>
+                        <button type="button" class="btn" onclick="inputFoto('gal', ${n})">🖼️ Galeria</button>
+                    </div>
+                    <div id="avPrev${n}" class="av-prev" data-eid="${a && temFotoN(a, n) ? chaveFoto(a.id, n) : ''}"></div>
+                </div>`).join('')}
             </div>
-            <div id="avPrev" class="full" data-eid="${a && a.foto ? a.id : ''}"></div>
             <button class="btn btn-ok full" onclick="salvarAv('${id}','${a ? a.id : ''}')">${a ? 'Salvar alteração' : 'Adicionar'}</button>
             ${a ? `<button class="btn full" onclick="abrirAvarias('${id}')">Cancelar edição</button>` : ''}
         </div>` : '';
@@ -1238,7 +1249,7 @@ const Fotos = {
         } catch (e) { }
     }
 };
-let avFoto = { novo: null, remover: false }, avSalvando = false;
+let avFotos = { 1: { novo: null, remover: false }, 2: { novo: null, remover: false } }, avAlvo = 1, avSalvando = false;
 function reduzirImagem(file, max = 1000, q = 0.65) { // redimensiona e comprime para ~80–150 KB
     return new Promise((ok, erro) => {
         const url = URL.createObjectURL(file), img = new Image();
@@ -1256,7 +1267,7 @@ function reduzirImagem(file, max = 1000, q = 0.65) { // redimensiona e comprime 
 async function escolherFotoAv(inp) {
     const f = inp.files && inp.files[0];
     if (!f) return;
-    try { avFoto = { novo: await reduzirImagem(f), remover: false }; atualizarPrevAv(); }
+    try { avFotos[avAlvo] = { novo: await reduzirImagem(f), remover: false }; atualizarPrevAv(); }
     catch (e) { alert('Não consegui ler essa foto. Tente outra.'); }
     inp.value = '';
 }
@@ -1270,7 +1281,7 @@ function criarInputFoto(id, cam) {
     document.body.appendChild(i);
 }
 criarInputFoto('fotoInpCam', true); criarInputFoto('fotoInpGal', false);
-function inputFoto(t) { const i = document.getElementById(t === 'cam' ? 'fotoInpCam' : 'fotoInpGal'); i.value = ''; i.click(); }
+function inputFoto(t, n) { if (n) avAlvo = n; const i = document.getElementById(t === 'cam' ? 'fotoInpCam' : 'fotoInpGal'); i.value = ''; i.click(); }
 
 /* câmera dentro do próprio app (abre direto, sem passar pela galeria) */
 let camStream = null;
@@ -1278,7 +1289,8 @@ function fecharCamera() {
     if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
     const o = document.getElementById('camOverlay'); if (o) o.remove();
 }
-async function abrirCamera() {
+async function abrirCamera(n) {
+    if (n) avAlvo = n;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { inputFoto('cam'); return; }
     try {
         camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
@@ -1289,7 +1301,8 @@ async function abrirCamera() {
     const o = document.createElement('div');
     o.id = 'camOverlay';
     o.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100000;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:10px;box-sizing:border-box';
-    o.innerHTML = `<video id="camVideo" autoplay playsinline muted style="width:100%;flex:1;min-height:0;object-fit:contain;background:#000"></video>
+    o.innerHTML = `<div style="color:#fff;text-align:center;padding:6px 8px 10px;font:600 15px Arial,sans-serif">${FOTOS_AV[avAlvo].titulo}<div style="font-weight:400;font-size:12px;color:#c9d3dd;margin-top:2px">${FOTOS_AV[avAlvo].dica}</div></div>
+        <video id="camVideo" autoplay playsinline muted style="width:100%;flex:1;min-height:0;object-fit:contain;background:#000"></video>
         <div style="display:flex;gap:12px;padding:12px 0;width:100%;max-width:420px">
             <button type="button" class="btn" style="flex:1" onclick="fecharCamera()">Cancelar</button>
             <button type="button" class="btn btn-ok" style="flex:2;font-size:16px" onclick="capturarFoto()">📸 Capturar</button>
@@ -1305,15 +1318,17 @@ function capturarFoto() {
     const c = document.createElement('canvas');
     c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
     c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-    avFoto = { novo: c.toDataURL('image/jpeg', 0.65), remover: false };
+    avFotos[avAlvo] = { novo: c.toDataURL('image/jpeg', 0.65), remover: false };
     fecharCamera(); atualizarPrevAv();
 }
-function removerFotoAv() { avFoto = { novo: null, remover: true }; atualizarPrevAv(); }
+function removerFotoAv(n) { avFotos[n] = { novo: null, remover: true }; atualizarPrevAv(); }
 async function atualizarPrevAv() {
-    const box = document.getElementById('avPrev'); if (!box) return;
-    let src = avFoto.novo;
-    if (!src && !avFoto.remover && box.dataset.eid) src = await Fotos.ler(box.dataset.eid);
-    box.innerHTML = src ? `<img src="${src}" alt="Foto da avaria"><br><button class="btn" onclick="removerFotoAv()">🗑️ Remover foto</button>` : '';
+    for (const n of [1, 2]) {
+        const box = document.getElementById('avPrev' + n); if (!box) continue;
+        let src = avFotos[n].novo;
+        if (!src && !avFotos[n].remover && box.dataset.eid) src = await Fotos.ler(box.dataset.eid);
+        box.innerHTML = src ? `<img src="${src}" alt="${n === 2 ? 'Código de barras + produto' : 'Foto da avaria'}"><button type="button" class="btn" onclick="removerFotoAv(${n})">🗑️ Remover</button>` : '<small style="color:#6b7785">Sem foto</small>';
+    }
 }
 function carregarThumbs() {
     document.querySelectorAll('#modalCorpo img[data-foto]').forEach(async im => {
@@ -1337,20 +1352,22 @@ async function salvarAv(id, edId) {
     try {
         const L = S.times[id].avarias, x = edId && L.find(v => v.id === edId);
         const aid = x ? x.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        let temFoto = x ? !!x.foto : false;
-        try {
-            if (avFoto.novo) { await Fotos.salvar(aid, avFoto.novo); temFoto = true; }
-            else if (avFoto.remover && temFoto) { await Fotos.apagar(aid); temFoto = false; }
-        } catch (e) { alert('Não consegui salvar a foto (verifique a internet ou as regras do banco). O registro será salvo sem ela.'); }
-        if (x) Object.assign(x, { data, produto, qtd, obs, foto: temFoto });
-        else L.push({ id: aid, data, produto, qtd, obs, foto: temFoto });
+        const tem = { 1: x ? !!x.foto : false, 2: x ? !!x.foto2 : false };
+        for (const n of [1, 2]) {
+            try {
+                if (avFotos[n].novo) { await Fotos.salvar(chaveFoto(aid, n), avFotos[n].novo); tem[n] = true; }
+                else if (avFotos[n].remover && tem[n]) { await Fotos.apagar(chaveFoto(aid, n)); tem[n] = false; }
+            } catch (e) { alert(`Não consegui salvar a foto "${n === 2 ? 'código de barras + produto' : 'avaria'}" (verifique a internet ou as regras do banco). O registro será salvo sem ela.`); }
+        }
+        if (x) Object.assign(x, { data, produto, qtd, obs, foto: tem[1], foto2: tem[2] });
+        else L.push({ id: aid, data, produto, qtd, obs, foto: tem[1], foto2: tem[2] });
         salvar('times/' + id + '/avarias'); abrirAvarias(id); renderAll();
     } finally { avSalvando = false; }
 }
 function removerAv(id, aid) {
     if (!podeEditar() || !confirm('Remover este registro de avaria?')) return;
     const L = S.times[id].avarias, i = L.findIndex(v => v.id === aid);
-    if (i >= 0) { if (L[i].foto) Fotos.apagar(aid); L.splice(i, 1); }
+    if (i >= 0) { if (L[i].foto) Fotos.apagar(aid); if (L[i].foto2) Fotos.apagar(chaveFoto(aid, 2)); L.splice(i, 1); }
     salvar('times/' + id + '/avarias'); abrirAvarias(id); renderAll();
 }
 function abrirRelatorio(alvo) {
@@ -1365,7 +1382,8 @@ async function imprimirRelatorio() {
     const ids = eq === 'todas' ? idEquipes() : [eq];
     const per = (de || ate) ? 'Período: ' + (de ? fmtBR(de) : 'início') + ' a ' + (ate ? fmtBR(ate) : 'hoje') : 'Período: todo o histórico';
     const dados = ids.map(i => ({ i, L: S.times[i].avarias.filter(a => (!de || a.data >= de) && (!ate || a.data <= ate)).sort((x, y) => x.data.localeCompare(y.data)) }));
-    await Promise.all(dados.flatMap(d => d.L.filter(a => a.foto).map(a => Fotos.ler(a.id))));
+    await Promise.all(dados.flatMap(d => d.L.flatMap(a => [1, 2].filter(n => temFotoN(a, n)).map(n => Fotos.ler(chaveFoto(a.id, n))))));
+    const fotosRel = a => { const f = [1, 2].filter(n => temFotoN(a, n) && Fotos.cache[chaveFoto(a.id, n)]); return f.length ? `<div class="rp-fotos">${f.map(n => `<figure><img class="rp-foto" src="${Fotos.cache[chaveFoto(a.id, n)]}"><figcaption>${n === 2 ? 'Cód. barras + produto' : 'Avaria'}</figcaption></figure>`).join('')}</div>` : ''; };
     let h = `<h1>Relatório de Mercadorias Avariadas</h1><div class="sub">${per} · Emitido em ${fmtBR(hojeStr())}</div>`;
     if (ids.length > 1) {
         h += '<table><tr><th>Equipe</th><th>Registros</th><th>Unidades avariadas</th></tr>' + dados.map(d => `<tr><td>${TEAMS[d.i].nome}</td><td>${d.L.length}</td><td>${somaUn(d.L)}</td></tr>`).join('')
@@ -1375,7 +1393,7 @@ async function imprimirRelatorio() {
         const t = S.times[d.i];
         h += `<div class="rp-sec" style="--c:${COR_EQ[d.i]}"><h2>Equipe ${esc(TEAMS[d.i].nome)}</h2>
             <div class="sub">Líder: ${esc(liderDe(d.i)) || '—'} · Integrantes: ${esc(t.integrantes.join(', ')) || '—'}</div>`
-            + (d.L.length ? `<table><tr><th>Data</th><th>Mercadoria</th><th>Qtd</th><th>Observação</th><th>Foto</th></tr>${d.L.map(a => `<tr><td>${fmtBR(a.data)}</td><td>${esc(a.produto)}</td><td>${a.qtd}</td><td>${esc(a.obs)}</td><td>${a.foto && Fotos.cache[a.id] ? `<img class="rp-foto" src="${Fotos.cache[a.id]}">` : ''}</td></tr>`).join('')}<tr><th colspan="2">Total</th><th colspan="3">${somaUn(d.L)} un.</th></tr></table>` : '<p>Nenhuma avaria registrada no período.</p>') + '</div>';
+            + (d.L.length ? `<table><tr><th>Data</th><th>Mercadoria</th><th>Qtd</th><th>Observação</th><th>Fotos</th></tr>${d.L.map(a => `<tr><td>${fmtBR(a.data)}</td><td>${esc(a.produto)}</td><td>${a.qtd}</td><td>${esc(a.obs)}</td><td>${fotosRel(a)}</td></tr>`).join('')}<tr><th colspan="2">Total</th><th colspan="3">${somaUn(d.L)} un.</th></tr></table>` : '<p>Nenhuma avaria registrada no período.</p>') + '</div>';
     });
     h += '<div class="ass"><div>Líder / Responsável</div><div>Supervisor</div></div>';
     fecharModal();
@@ -1404,31 +1422,18 @@ function noPeriodo(iso, per) {
     if (per === 'semana') { const sg = segundaRecente(); return d >= sg && d < addDias(sg, 7); }
     return ymd(d) === ymd(h);
 }
-function topoPeriodo(per) { // equipe(s) com mais carros finalizados no período (só se > 0)
-    const c = {}; idEquipes().forEach(i => c[i] = 0);
-    cargasL().forEach(x => { if (x.fim && c[x.eq] != null && noPeriodo(x.fim, per)) c[x.eq]++; });
-    const m = Math.max(...Object.values(c));
-    return m > 0 ? idEquipes().filter(i => c[i] === m) : [];
-}
-function fmtDur(ms) { const m = Math.round(ms / 60000); return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0'); }
-function fmtCron(ms) { const t = Math.max(0, Math.floor(ms / 1000)), p = n => String(n).padStart(2, '0'), h = Math.floor(t / 3600); return (h ? h + ':' : '') + p(Math.floor(t % 3600 / 60)) + ':' + p(t % 60); }
-setInterval(() => document.querySelectorAll('.cron[data-ini]').forEach(e => { e.textContent = fmtCron(Date.now() - new Date(e.dataset.ini)); }), 1000);
 function renderCarros() {
     const box = document.getElementById('carros'); if (!box || !usuarioAtual()) return;
     const ed = podeEditar(), eqs = idEquipes(), L = cargasL(), frotaL = Object.values(S.carros || {});
     const opts = sel => '<option value="">Equipe…</option>' + eqs.map(i => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(TEAMS[i].nome)}</option>`).join('');
     const abertas = L.filter(c => !c.fim || !TEAMS[c.eq]).sort((a, b) => (a.ini || a.fim) < (b.ini || b.fim) ? -1 : 1);
-    const andam = abertas.map(c => `<div class="ld"><span class="ld-n">🚛 ${esc(c.carro)} <small style="color:#9aa7b4">${c.fim ? 'finalizado · escolha a equipe' : 'desde ' + hhmm(c.ini) + (c.ini ? ' · ⏱ <span class="cron" data-ini="' + c.ini + '"></span>' : '')}${c.via === 'coletor' ? ' · coletor' : ''}</small></span>`
+    const andam = abertas.map(c => `<div class="ld"><span class="ld-n">🚛 ${esc(c.carro)} <small style="color:#9aa7b4">${c.fim ? 'finalizado · escolha a equipe' : 'desde ' + hhmm(c.ini)}${c.via === 'coletor' ? ' · coletor' : ''}</small></span>`
         + (ed ? `<select class="m-input" style="width:120px;padding:4px" onchange="eqCarga('${c.id}',this.value)">${opts(c.eq)}</select>${c.fim ? '' : `<button class="ld-st" onclick="finalizarCarga('${c.id}')">✔ Finalizar</button>`}<span class="ld-ac"><button class="x" title="Cancelar" onclick="cancelarCarga('${c.id}')">✕</button></span>`
             : `<span style="color:${COR_EQ[c.eq] || '#aaa'};font-weight:700">${esc((TEAMS[c.eq] || {}).nome || '—')}</span>`) + '</div>').join('') || '<p class="m-info">Nenhum carro em carregamento agora.</p>';
     const fin = L.filter(c => c.fim && TEAMS[c.eq] && noPeriodo(c.fim, rkPer));
     const cont = {}; eqs.forEach(i => cont[i] = 0); fin.forEach(c => cont[c.eq]++);
-    const dur = c => c.ini && c.fim ? new Date(c.fim) - new Date(c.ini) : null, tempos = {};
-    eqs.forEach(i => tempos[i] = []); fin.forEach(c => { const d = dur(c); if (d != null && d >= 0) tempos[c.eq].push(d); });
-    const medio = i => tempos[i].length ? fmtDur(tempos[i].reduce((a, b) => a + b, 0) / tempos[i].length) : '—';
-    const feitos = L.filter(c => c.fim && TEAMS[c.eq] && noPeriodo(c.fim, 'dia')).sort((a, b) => a.fim < b.fim ? 1 : -1).slice(0, 10).map(c => { const d = dur(c); return `<div class="ld"><span class="ld-n">✔ ${esc(c.carro)} <small style="color:#9aa7b4">${hhmm(c.ini)} → ${hhmm(c.fim)}</small></span><span style="color:${COR_EQ[c.eq]};font-weight:700">${esc(TEAMS[c.eq].nome)}</span><b>${d != null && d >= 0 ? fmtDur(d) : '—'}</b></div>`; }).join('');
     const ord = eqs.slice().sort((a, b) => cont[b] - cont[a]), max = Math.max(1, cont[ord[0]]);
-    const rk = ord.map((i, p) => `<tr><td>${cont[i] && p < 3 ? ['🥇', '🥈', '🥉'][p] : (p + 1) + 'º'}</td><td><span class="pt" style="background:${COR_EQ[i]}"></span>${esc(TEAMS[i].nome)}</td><td style="width:45%"><div class="rk-bar" style="width:${cont[i] / max * 100}%;background:${COR_EQ[i]}"></div></td><td><b>${cont[i]}</b></td><td style="color:#9aa7b4;white-space:nowrap">⏱ ${medio(i)}</td></tr>`).join('');
+    const rk = ord.map((i, p) => `<tr><td>${cont[i] && p < 3 ? ['🥇', '🥈', '🥉'][p] : (p + 1) + 'º'}</td><td><span class="pt" style="background:${COR_EQ[i]}"></span>${esc(TEAMS[i].nome)}</td><td style="width:45%"><div class="rk-bar" style="width:${cont[i] / max * 100}%;background:${COR_EQ[i]}"></div></td><td><b>${cont[i]}</b></td></tr>`).join('');
     const tabs = [['dia', 'Hoje'], ['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano']].map(([k, t]) => `<button class="btn${rkPer === k ? ' btn-ok' : ''}" onclick="rkPer='${k}';renderCarros()">${t}</button>`).join('');
     const lista = frotaL.filter(c => c.c).map(c => `<option value="${esc(c.n)}">`).join('');
     const form = ed ? `<h3 style="margin-top:14px">Registrar carro</h3>
@@ -1436,8 +1441,8 @@ function renderCarros() {
         <div class="ld-add"><button onclick="registrarCarga(false)">▶ Iniciar</button><button onclick="registrarCarga(true)">✔ Já finalizado</button><button onclick="abrirFrota()">🚛 Frota</button></div>` : '';
     box.innerHTML = `<h2>🏆 Carros e ranking</h2>
         <div class="sub">Cada carro finalizado soma 1 para a equipe · frota: ${frotaL.filter(c => c.c).length} que carregamos, ${frotaL.filter(c => !c.c).length} que não carregamos</div>
-        <div class="lid-cols"><div><h3>Em carregamento</h3>${andam}${form}<h3 style="margin-top:14px">Finalizados hoje</h3>${feitos || '<p class="m-info">Nenhum ainda.</p>'}</div>
-        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros · ⏱ = tempo médio por carro</div></div></div>`;
+        <div class="lid-cols"><div><h3>Em carregamento</h3>${andam}${form}</div>
+        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros</div></div></div>`;
 }
 function eqCarga(id, v) { if (!podeEditar() || !S.cargas[id]) return; S.cargas[id].eq = v; salvar('cargas/' + id); renderAll(); }
 function finalizarCarga(id) {
