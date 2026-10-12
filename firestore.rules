@@ -1,0 +1,132 @@
+rules_version = '2';
+
+// Regras de segurança do banco de dados (quem pode ler/alterar o quê).
+// Estas regras NÃO expiram: não há data de validade como no "modo de teste".
+// Cole tudo em: Firebase -> Firestore Database -> aba "Regras" -> Publicar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function logado() { return request.auth != null; }
+    function admin() { return logado() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function eu(uid) { return logado() && request.auth.uid == uid; }
+    function soMuda(campos) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos); }
+    function carroDepois(id) { return getAfter(/databases/$(database)/documents/carros/$(id)).data; }
+    function uso(id) { return get(/databases/$(database)/documents/usos/$(id)).data; }
+
+    // Administradores: criados manualmente no console do Firebase
+    match /admins/{uid} {
+      allow read: if eu(uid);
+      allow write: if false;
+    }
+
+    // Motoristas: cada um só cria/edita o próprio cadastro
+    match /motoristas/{uid} {
+      allow read: if eu(uid) || admin();
+      allow create: if eu(uid)
+        && request.resource.data.keys().hasOnly(['nome', 'telefone', 'disponivelEm', 'ultimoUso', 'criadoEm', 'tokens'])
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 2 && request.resource.data.nome.size() <= 60;
+      allow update: if admin()
+        || (eu(uid) && soMuda(['nome', 'telefone', 'disponivelEm', 'ultimoUso', 'tokens']));
+      allow delete: if admin();
+    }
+
+    // Carros: todos veem; só o admin cadastra. O motorista só pode pegar um carro
+    // disponível ou devolver o carro que está com ele.
+    match /carros/{id} {
+      allow read: if logado();
+      allow create, delete: if admin();
+      allow update: if admin()
+        || (logado()
+            && resource.data.status == 'disponivel'
+            && request.resource.data.status == 'em_uso'
+            && request.resource.data.motoristaId == request.auth.uid
+            && existsAfter(/databases/$(database)/documents/usos/$(request.resource.data.usoId))
+            && soMuda(['status', 'motoristaId', 'motoristaNome', 'usoId', 'desde']))
+        || (logado()
+            && resource.data.status == 'em_uso'
+            && resource.data.motoristaId == request.auth.uid
+            && request.resource.data.status == 'disponivel'
+            && request.resource.data.motoristaId == null
+            && soMuda(['status', 'motoristaId', 'motoristaNome', 'usoId', 'desde']));
+    }
+
+    // Usos (cada vez que um motorista pega um carro)
+    match /usos/{usoId} {
+      allow read: if admin() || (logado() && resource.data.motoristaId == request.auth.uid);
+      allow create: if logado()
+        && request.resource.data.motoristaId == request.auth.uid
+        && request.resource.data.fim == null
+        && carroDepois(request.resource.data.carroId).usoId == usoId
+        && carroDepois(request.resource.data.carroId).motoristaId == request.auth.uid;
+      allow update: if admin()
+        || (logado()
+            && resource.data.motoristaId == request.auth.uid
+            && resource.data.fim == null
+            && soMuda(['fim', 'ultimaPos', 'vistoriaRetirada']));
+      allow delete: if admin();
+
+      // Pontos de GPS do trajeto
+      match /pontos/{p} {
+        allow read: if admin() || (logado() && uso(usoId).motoristaId == request.auth.uid);
+        allow create: if logado() && uso(usoId).motoristaId == request.auth.uid && uso(usoId).fim == null;
+        allow update, delete: if admin();
+      }
+    }
+
+    // Vistorias (fotos, vídeo, km, combustível)
+    match /vistorias/{id} {
+      allow read: if admin() || (logado() && resource.data.motoristaId == request.auth.uid);
+      allow create: if logado()
+        && request.resource.data.motoristaId == request.auth.uid
+        && uso(request.resource.data.usoId).motoristaId == request.auth.uid;
+      allow update, delete: if admin();
+    }
+
+    // Convites de motorista (criados pelo administrador). O motorista só consegue abrir
+    // um convite pelo código exato (não dá para listar) e marcar como usado por ele mesmo.
+    match /convites/{cod} {
+      allow get: if logado();
+      allow list: if admin();
+      allow create, delete: if admin();
+      allow update: if logado()
+        && resource.data.usadoPor == null
+        && request.resource.data.usadoPor == request.auth.uid
+        && soMuda(['usadoPor', 'usadoEm']);
+    }
+
+    // Fotos e vídeos das vistorias (guardados em pedaços de até 900 KB)
+    match /midias/{id} {
+      allow read: if admin() || (logado() && resource.data.motoristaId == request.auth.uid);
+      allow create: if logado()
+        && request.resource.data.motoristaId == request.auth.uid
+        && uso(request.resource.data.usoId).motoristaId == request.auth.uid
+        && request.resource.data.dados is bytes;
+      allow update: if false;
+      allow delete: if admin();
+    }
+
+    // Ocorrências registradas pelo motorista durante o uso (pneu, batida, pane, multa…)
+    match /ocorrencias/{id} {
+      allow read: if admin() || (logado() && resource.data.motoristaId == request.auth.uid);
+      allow create: if logado()
+        && request.resource.data.motoristaId == request.auth.uid
+        && request.resource.data.status == 'aberta'
+        && uso(request.resource.data.usoId).motoristaId == request.auth.uid;
+      allow update, delete: if admin();
+    }
+
+    // Reservas: todos veem (para evitar conflito); cada um cria/cancela a sua
+    match /reservas/{id} {
+      allow read: if logado();
+      allow create: if logado()
+        && request.resource.data.motoristaId == request.auth.uid
+        && request.resource.data.status == 'ativa'
+        && request.resource.data.fim > request.resource.data.inicio;
+      allow update: if admin()
+        || (logado() && resource.data.motoristaId == request.auth.uid
+            && soMuda(['status']) && request.resource.data.status == 'cancelada');
+      allow delete: if admin();
+    }
+  }
+}

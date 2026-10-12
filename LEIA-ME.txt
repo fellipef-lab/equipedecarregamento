@@ -1,0 +1,120 @@
+==============================================================
+  FROTA DISPONÍVEL — VERSÃO ONLINE
+  Firebase (plano GRÁTIS / Spark) + GitHub Pages
+==============================================================
+
+O QUE TEM NESTA PASTA
+  app\               -> o aplicativo. É ESTA pasta que vai para o GitHub.
+  app\config.js      -> dados do seu Firebase (já preenchido)
+  firestore.rules    -> regras de segurança (já coladas no Firebase; guarde de reserva)
+  LEIA-ME.txt        -> este guia
+
+
+--------------------------------------------------------------
+COMO ATUALIZAR O APP DEPOIS DE UMA MUDANÇA
+--------------------------------------------------------------
+  Mudar um arquivo aqui NÃO atualiza o app sozinho. O app que os celulares usam é o
+  que está no GitHub. Depois de qualquer mudança na pasta app:
+
+  1) GitHub -> seu repositório -> "Add file" -> "Upload files"
+  2) Arraste SÓ os arquivos que mudaram (ex.: index.html, app.js) -> "Commit changes".
+     O arquivo antigo é substituído.
+  3) Em 1 a 2 minutos o site está atualizado. Os celulares pegam a versão nova na
+     próxima vez que abrirem o app com internet (às vezes é preciso fechar e abrir
+     de novo).
+
+  Se um dia mudar o firestore.rules: copie o conteúdo e cole em
+  Firebase -> Firestore Database -> Regras -> Publicar.
+
+
+--------------------------------------------------------------
+PARTE 1 — FIREBASE (tudo grátis, sem cartão)
+--------------------------------------------------------------
+
+1) Login dos usuários
+   -> Menu "Authentication" -> "Vamos começar" -> aba "Método de login":
+      - ative "Anônimo"           (é assim que os motoristas entram, só com o nome)
+      - ative "E-mail/senha"      (é assim que o administrador entra)
+
+2) Seu usuário de administrador
+   -> Authentication -> aba "Usuários" -> "Adicionar usuário" -> seu e-mail e uma senha.
+   -> COPIE o "UID do usuário" (sequência de letras e números).
+
+3) Banco de dados  (ATENÇÃO: é o FIRESTORE, não o "Realtime Database")
+   -> Menu "Firestore Database" -> "Criar banco de dados"
+   -> Local: southamerica-east1 (São Paulo) -> Modo de produção -> Criar.
+   -> Clique em "Iniciar coleção":
+        ID da coleção:   admins
+        ID do documento: COLE O UID copiado no passo 2
+        Campo: ativo   Tipo: boolean   Valor: true
+      -> Salvar.   (É isso que faz você ser administrador.)
+
+4) Regras (NÃO expiram)
+   -> Firestore Database -> aba "Regras" -> apague tudo que estiver lá
+   -> abra o arquivo firestore.rules no Bloco de Notas, copie TUDO e cole -> "Publicar".
+
+5) Dados do app para o config.js
+   -> Engrenagem (Configurações do projeto) -> aba "Geral" -> "Seus apps" -> ícone </> (Web)
+   -> Apelido: Frota -> "Registrar app" (NÃO marque Firebase Hosting).
+   -> Aparece "firebaseConfig = { apiKey: ..., ... }".
+   -> Abra app\config.js no Bloco de Notas e troque cada "COLE-AQUI" pelo valor correspondente.
+   -> Se quiser, preencha whatsappCentral (seu WhatsApp com DDD).
+
+
+--------------------------------------------------------------
+PARTE 2 — GITHUB PAGES (grátis)
+--------------------------------------------------------------
+
+6) No GitHub: crie um repositório (ex.: frota)
+   -> "Add file" -> "Upload files"
+   -> arraste TODOS os arquivos da pasta app (index.html, app.js, config.js, sw.js,
+      manifest.json, icon-192.png, icon-512.png e .nojekyll) -> "Commit changes".
+   O index.html precisa ficar na RAIZ do repositório (não dentro de uma pasta).
+   Dica: o .nojekyll fica oculto no Windows. Se não aparecer, tudo bem, ele é opcional.
+
+7) Repositório -> Settings -> Pages -> Source: "Deploy from a branch"
+   -> Branch: main  /(root) -> Save. Em 1 a 2 minutos sai o link:
+      https://SEU-USUARIO.github.io/frota/
+
+8) No Firebase: Authentication -> Configurações -> "Domínios autorizados"
+   -> "Adicionar domínio" -> SEU-USUARIO.github.io
+
+Sempre que mudar algum arquivo (ex.: config.js), suba de novo no GitHub
+("Add file" -> "Upload files" substitui o arquivo antigo).
+
+
+--------------------------------------------------------------
+PARTE 3 — USAR
+--------------------------------------------------------------
+
+ADMINISTRADOR
+  - Abra o link -> "Administrador" -> e-mail e senha do passo 2 (só uma vez).
+  - Carros -> "Cadastrar carro" -> "QR Codes" -> Imprimir -> cole uma etiqueta em cada carro.
+  - "Liberar": avisa os motoristas DISPONÍVEIS hoje e oferece avisar pelo WhatsApp.
+  - Mapa: posição dos carros em uso e trajeto.
+  - Histórico -> Relatório: fotos, vídeo, km, combustível, trajeto. Imprimir / PDF.
+  - Ajustes: alerta de inatividade e limpeza de fotos/vídeos antigos.
+
+MOTORISTAS
+  - Mande o link. No celular:
+      Android: Chrome -> menu (3 pontinhos) -> "Instalar app".
+      iPhone:  Safari -> Compartilhar -> "Adicionar à Tela de Início".
+  - "Sou motorista" -> nome e WhatsApp (só na primeira vez) -> "Ativar avisos".
+  - Todo dia que sobrar: "Estou disponível".
+  - Pegar/devolver: botão "ler QR Code" -> vistoria (5 fotos + vídeo + km + combustível).
+
+
+--------------------------------------------------------------
+LIMITES DO PLANO GRÁTIS
+--------------------------------------------------------------
+  - Espaço: 1 GB no total. Cada uso com vistoria ocupa ~3 a 5 MB (fotos comprimidas e
+    vídeo curto). Use "Ajustes -> Apagar fotos e vídeos antigos" de tempos em tempos.
+  - Uso diário: 50 mil leituras e 20 mil gravações por dia. Sobra para uma frota pequena/média.
+    Se passar, o app para até o dia seguinte (não cobra nada).
+  - Aviso de carro liberado: aparece no celular do motorista disponível enquanto o app estiver
+    ABERTO ou MINIMIZADO. Com o app totalmente fechado, use o botão de WhatsApp que aparece
+    quando você libera o carro.
+  - GPS: só é enviado com o app aberto e a tela ligada (o app tenta manter a tela acesa).
+  - Fotos/vídeos precisam de internet na hora de salvar a vistoria.
+  - LGPD: avise os motoristas por escrito que a localização é registrada somente enquanto
+    eles estão com um carro da empresa.
