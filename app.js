@@ -146,7 +146,8 @@ function modal(html, { onClose } = {}) {
 const S = {
   user: null, admin: false, me: null,
   carros: [], motoristas: [], admins: [], usosAtivos: [], reservas: [], convites: [], ocorrencias: [], analises: [], usoAtivo: null,
-  view: null, live: false, tab: getLS("frota_tab") || "carros",
+  view: null, live: false, tab: "inicio",   // o painel sempre abre no Início
+  resumo: null,
   subs: [], pushSuportado: false, pushOk: getLS("frota_push") === "1",
 };
 
@@ -157,6 +158,7 @@ function reRender() {
   tRender = setTimeout(() => { if (S.live && S.view) S.view.fn(...S.view.args); }, 120);
 }
 function topo(titulo, botoes = []) {
+  app.classList.remove("largo");   // só o painel do administrador usa a tela larga
   $("#hTitle").textContent = titulo;
   const box = $("#hBtns"); box.innerHTML = "";
   botoes.forEach(([txt, fn]) => { const b = document.createElement("button"); b.textContent = txt; b.onclick = fn; box.appendChild(b); });
@@ -1527,30 +1529,135 @@ function ouvirAdmin() {
   });
 }
 
-const ABAS = [["carros", "🚗 Carros"], ["motoristas", "👥 Usuários"], ["mapa", "🗺️ Mapa"], ["ocorrencias", "⚠️ Ocorrências"], ["historico", "📄 Histórico"], ["reservas", "📅 Reservas"], ["ajustes", "⚙️ Ajustes"]];
+const ABAS = [["inicio", "🏠 Início"], ["carros", "🚗 Carros"], ["motoristas", "👥 Usuários"], ["mapa", "🗺️ Mapa"], ["ocorrencias", "⚠️ Ocorrências"], ["historico", "📄 Histórico"], ["reservas", "📅 Reservas"], ["ajustes", "⚙️ Ajustes"]];
+const ocorrenciasAbertas = () => S.ocorrencias.filter(o => o.status !== "resolvida").length + S.analises.filter(a => (a.avarias || []).length && !a.revisado).length;
+function irPara(tab) { S.tab = tab; setLS("frota_tab", tab); go(telaAdmin); }
 
 function telaAdmin() {
   const tab = S.tab;
-  S.live = ["carros", "motoristas", "reservas", "ocorrencias"].includes(tab);
+  S.live = ["inicio", "carros", "motoristas", "reservas", "ocorrencias"].includes(tab);
   topo("🛠️ Administração", [["👤 " + primeiroNome(meuAdmin().nome), abrirMinhaConta]]);
+  app.classList.add("largo");
   const dias = +(getLS("frota_dias_alerta") || 3);
   const inativos = S.motoristas.filter(m => Date.now() - (ms(m.ultimoUso) || ms(m.criadoEm) || 0) > dias * 864e5);
   const livres = S.carros.filter(c => c.status === "disponivel").length;
   const dispHoje = S.motoristas.filter(m => m.disponivelEm === hoje()).length;
+  const abertasOc = ocorrenciasAbertas();
 
-  let h = "";
+  // No computador o menu fica na lateral (CSS .painel); no celular, em cima
+  let h = `<div class="painel"><nav class="tabs">${ABAS.map(([k, t]) => {
+    const n = k === "carros" ? `${livres}/${S.carros.length}` : k === "motoristas" ? `${dispHoje}/${S.motoristas.length}` : k === "mapa" ? `${S.usosAtivos.length}` : k === "ocorrencias" && abertasOc ? `${abertasOc}` : "";
+    return `<button data-t="${k}" class="${tab === k ? "on" : ""}"><span>${t}</span>${n ? `<b class="cont">${n}</b>` : ""}</button>`;
+  }).join("")}</nav><div class="conteudo">`;
   if (inativos.length) {
     h += `<div class="alert"><b>⚠️ ${inativos.length} motorista${inativos.length > 1 ? "s" : ""} sem usar o app há mais de ${dias} dias</b>
       ${inativos.map(m => `${esc(m.nome)} (último uso ${ago(m.ultimoUso)})`).join("<br>")}</div>`;
   }
-  h += `<div class="tabs">${ABAS.map(([k, t]) => {
-    const abertasOc = S.ocorrencias.filter(o => o.status !== "resolvida").length + S.analises.filter(a => (a.avarias || []).length && !a.revisado).length;
-    const n = k === "carros" ? ` ${livres}/${S.carros.length}` : k === "motoristas" ? ` ${dispHoje}/${S.motoristas.length}` : k === "mapa" ? ` ${S.usosAtivos.length}` : k === "ocorrencias" && abertasOc ? ` ${abertasOc}` : "";
-    return `<button data-t="${k}" class="${tab === k ? "on" : ""}">${t}${n}</button>`;
-  }).join("")}</div><div id="aba"></div>`;
+  h += `<div id="aba"></div></div></div>`;
   app.innerHTML = h;
-  $$(".tabs button").forEach(b => b.onclick = () => { S.tab = b.dataset.t; setLS("frota_tab", S.tab); go(telaAdmin); });
-  ({ carros: abaCarros, motoristas: abaMotoristas, mapa: abaMapa, ocorrencias: abaOcorrencias, historico: abaHistorico, reservas: abaReservas, ajustes: abaAjustes }[tab] || abaCarros)($("#aba"));
+  $$(".tabs button").forEach(b => b.onclick = () => irPara(b.dataset.t));
+  ({ inicio: abaInicio, carros: abaCarros, motoristas: abaMotoristas, mapa: abaMapa, ocorrencias: abaOcorrencias, historico: abaHistorico, reservas: abaReservas, ajustes: abaAjustes }[tab] || abaInicio)($("#aba"));
+}
+
+/* ---------- Aba Início (resumo da frota) ---------- */
+// Usos e vistorias dos últimos 30 dias: lidos no máximo a cada 30 min (economiza a cota grátis do Firebase)
+async function carregarResumo(forcar) {
+  if (S.resumo && !forcar && Date.now() - S.resumo.t < 30 * 60000) return S.resumo;
+  if (S.carregandoResumo) return S.carregandoResumo;
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0); d0.setDate(d0.getDate() - 29);
+  const desde = Timestamp.fromDate(d0);
+  S.carregandoResumo = Promise.all([
+    getDocs(query(collection(db, "usos"), where("inicio", ">=", desde))),
+    getDocs(query(collection(db, "vistorias"), where("criadoEm", ">=", desde))),
+  ]).then(([u, v]) => (S.resumo = { t: Date.now(), desde: d0.getTime(), usos: lista(u), vist: lista(v) }))
+    .finally(() => { S.carregandoResumo = null; });
+  return S.carregandoResumo;
+}
+
+function abaInicio(el) {
+  const R = S.resumo;
+  if (!R || Date.now() - R.t > 30 * 60000) {
+    carregarResumo().then(() => { if (S.view?.fn === telaAdmin && S.tab === "inicio") telaAdmin(); })
+      .catch(e => { console.warn(e); if (!S.resumo) { S.resumo = { t: Date.now(), erro: true, usos: [], vist: [] }; if (S.tab === "inicio") telaAdmin(); } });
+  }
+  const emUso = S.usosAtivos.length;
+  const livres = S.carros.filter(c => c.status === "disponivel").length;
+  const parados = S.carros.filter(c => c.status === "indisponivel").length;
+  const dispHoje = S.motoristas.filter(m => m.disponivelEm === hoje()).length;
+  const abertasOc = ocorrenciasAbertas();
+
+  // Primeiros passos: some sozinho quando tudo estiver feito
+  const passos = [
+    [S.carros.length > 0, "Cadastre seu primeiro carro", "carros"],
+    [S.carros.length > 0 && !!getLS("frota_qr_visto"), "Imprima os QR Codes e cole nos carros", "qr"],
+    [S.motoristas.length > 0, "Cadastre um motorista (ou mande o link para ele criar a conta)", "motoristas"],
+    [!bioApi() || !!bioSalva(), "Ative a entrada com digital ou rosto neste aparelho", "ajustes"],
+  ];
+  const feitos = passos.filter(p => p[0]).length;
+  const cardPassos = feitos < passos.length ? `<div class="card">
+      <h2>🚀 Primeiros passos <span class="muted" style="font-weight:400">· ${feitos} de ${passos.length}</span></h2>
+      <div class="barra"><i style="width:${Math.round(feitos / passos.length * 100)}%"></i></div>
+      <ul class="list passos">${passos.map(([ok, txt, ir], i) => `
+        <li class="${ok ? "feito" : ""}" data-passo="${ir}"><span class="ck">${ok ? "✓" : i + 1}</span><span class="tx">${txt}</span>${ok ? "" : `<span class="muted">›</span>`}</li>`).join("")}</ul>
+    </div>` : "";
+
+  const kpi = (n, t, s, cor, ir) => `<button class="kpi" style="--cor:${cor}" data-ir="${ir}"><div class="n">${n}</div><div class="t">${t}</div>${s ? `<div class="s">${s}</div>` : ""}</button>`;
+  const kpis = `<div class="kpis">
+      ${kpi(livres, "Carros disponíveis", `de ${S.carros.length} na frota`, "var(--ok)", "carros")}
+      ${kpi(emUso, "Em uso agora", emUso ? "ver no mapa" : "nenhum na rua", "var(--primary)", "mapa")}
+      ${kpi(parados, "Parados", "indisponíveis", "var(--muted)", "carros")}
+      ${kpi(dispHoje, "Motoristas disponíveis hoje", `de ${S.motoristas.length} cadastrados`, "#8250df", "motoristas")}
+      ${kpi(abertasOc, "Ocorrências abertas", abertasOc ? "precisam de atenção" : "tudo em ordem", abertasOc ? "var(--bad)" : "var(--ok)", "ocorrencias")}
+    </div>`;
+
+  let mes = `<div class="card"><h2>📊 Últimos 30 dias</h2><div class="empty">Carregando…</div></div>`, eventos = "";
+  if (R && R.erro) mes = `<div class="card"><h2>📊 Últimos 30 dias</h2><div class="empty">Não foi possível carregar agora. <button class="mini" id="resAtualizar">Tentar de novo</button></div></div>`;
+  else if (R) {
+    // km por uso = km da devolução − km da retirada
+    const vs = {};
+    R.vist.forEach(v => { (vs[v.usoId] = vs[v.usoId] || {})[v.tipo] = v; });
+    const kmDe = u => { const r = vs[u.id]?.retirada, d = vs[u.id]?.devolucao; const k = d && r ? Number(d.km) - Number(r.km) : NaN; return k >= 0 && k < 5000 ? k : 0; };
+    const usos = R.usos;
+    const km = usos.reduce((s, u) => s + kmDe(u), 0);
+    const horas = usos.filter(u => u.fim).reduce((s, u) => s + Math.max(0, ms(u.fim) - ms(u.inicio)), 0) / 3600000;
+    const conta = campo => { const c = {}; usos.forEach(u => { const k = u[campo] || "—"; c[k] = (c[k] || 0) + 1; }); return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3); };
+    // gráfico: usos por dia
+    const dias = Array.from({ length: 30 }, (_, i) => { const d = new Date(R.desde); d.setDate(d.getDate() + i); return d; });
+    const porDia = {}; usos.forEach(u => { const k = new Date(ms(u.inicio)).toLocaleDateString("en-CA"); porDia[k] = (porDia[k] || 0) + 1; });
+    const max = Math.max(1, ...dias.map(d => porDia[d.toLocaleDateString("en-CA")] || 0));
+    const barras = dias.map((d, i) => {
+      const n = porDia[d.toLocaleDateString("en-CA")] || 0, alt = n ? Math.max(3, n / max * 70) : 0;
+      return `<rect x="${i * 10 + 1}" y="${80 - alt}" width="8" height="${alt}" rx="1.5"><title>${pad(d.getDate())}/${pad(d.getMonth() + 1)}: ${n} uso(s)</title></rect>
+        ${(i % 7 === 0 && i < 26) || i === 29 ? `<text x="${i === 29 ? 299 : i * 10 + 1}" y="92" text-anchor="${i === 29 ? "end" : "start"}">${i === 29 ? "hoje" : pad(d.getDate()) + "/" + pad(d.getMonth() + 1)}</text>` : ""}`;
+    }).join("");
+    const top = (t, arr) => `<div><div class="muted">${t}</div>${arr.length ? arr.map(([n, q], i) => `<div class="rank"><span>${["🥇", "🥈", "🥉"][i]} ${esc(n)}</span><b>${q}</b></div>`).join("") : `<div class="muted">—</div>`}</div>`;
+    mes = `<div class="card">
+        <h2 style="display:flex;justify-content:space-between;align-items:center;gap:8px">📊 Últimos 30 dias <button class="mini" id="resAtualizar" title="Atualizar">↻</button></h2>
+        <div class="numeros">
+          <div><b>${usos.length}</b><span>usos</span></div>
+          <div><b>${km.toLocaleString("pt-BR")}</b><span>km rodados</span></div>
+          <div><b>${horas < 10 ? horas.toFixed(1).replace(".", ",") : Math.round(horas)}</b><span>horas em uso</span></div>
+        </div>
+        ${usos.length ? `<div class="muted" style="font-size:12px">Usos por dia</div><div class="grafico"><svg viewBox="0 0 300 96">${barras}</svg></div>`
+          : `<div class="empty">Nenhum uso nos últimos 30 dias.</div>`}
+        <div class="tops">${top("Quem mais usou", conta("motoristaNome"))}${top("Carros mais usados", conta("carroNome"))}</div>
+      </div>`;
+
+    // Últimos acontecimentos: retiradas, devoluções e ocorrências
+    const ev = [];
+    usos.forEach(u => {
+      ev.push({ t: ms(u.inicio), html: `🔑 <b>${esc(primeiroNome(u.motoristaNome))}</b> pegou o <b>${esc(u.carroNome)}</b>` });
+      if (u.fim) { const k = kmDe(u); ev.push({ t: ms(u.fim), html: `✅ <b>${esc(primeiroNome(u.motoristaNome))}</b> devolveu o <b>${esc(u.carroNome)}</b>${k ? ` · ${k} km` : ""}` }); }
+    });
+    S.ocorrencias.forEach(o => ev.push({ t: ms(o.criadoEm), html: `⚠️ Ocorrência: <b>${esc(o.tipo)}</b> · ${esc(o.carroNome)} · ${esc(primeiroNome(o.motoristaNome))}` }));
+    const ult = ev.filter(e => e.t).sort((a, b) => b.t - a.t).slice(0, 8);
+    eventos = `<div class="card"><h2>🕒 Últimos acontecimentos</h2>${ult.length ? `<ul class="list eventos">${ult.map(e => `<li><span>${e.html}</span><span class="muted">${ago(e.t)}</span></li>`).join("")}</ul>` : `<div class="empty">Ainda não aconteceu nada. Quando um motorista pegar um carro, aparece aqui.</div>`}</div>`;
+  }
+
+  el.innerHTML = `${cardPassos}${kpis}<div class="duas">${mes}${eventos || ""}</div>`;
+  $$("[data-ir]", el).forEach(b => b.onclick = () => irPara(b.dataset.ir));
+  $$("[data-passo]", el).forEach(li => li.onclick = () => li.dataset.passo === "qr" ? (S.carros.length ? go(telaEtiquetas, S.carros) : irPara("carros")) : irPara(li.dataset.passo));
+  $("#resAtualizar", el) && ($("#resAtualizar", el).onclick = () => { S.resumo = null; telaAdmin(); });
 }
 
 /* ---------- Aba Ocorrências ---------- */
@@ -1693,6 +1800,7 @@ function telaCarroForm(c) {
 
 function telaEtiquetas(carros) {
   topo("🖨️ QR Codes", [["Voltar", () => go(telaAdmin)]]);
+  if (carros.length) setLS("frota_qr_visto", "1");   // passo "imprimir QR Codes" dos Primeiros passos
   app.innerHTML = `
     <div class="no-print acoes"><button class="btn" id="imprimir">🖨️ Imprimir etiquetas</button>
       <p class="muted center">Cole a etiqueta no carro (vidro ou painel). O motorista lê o QR para pegar e devolver.</p></div>
