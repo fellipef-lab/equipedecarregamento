@@ -13,10 +13,13 @@ service cloud.firestore {
     function carroDepois(id) { return getAfter(/databases/$(database)/documents/carros/$(id)).data; }
     function uso(id) { return get(/databases/$(database)/documents/usos/$(id)).data; }
 
-    // Administradores: criados manualmente no console do Firebase
+    // Administradores: o 1º foi criado no console do Firebase; os outros, por um administrador
+    // dentro do app. Ninguém remove o próprio acesso (evita ficar sem nenhum administrador).
     match /admins/{uid} {
-      allow read: if eu(uid);
-      allow write: if false;
+      allow read: if eu(uid) || admin();
+      allow create: if admin() && request.resource.data.ativo == true;
+      allow update: if admin() && request.resource.data.ativo == true;
+      allow delete: if admin() && !eu(uid);
     }
 
     // O usuário de login aponta para esta conta?
