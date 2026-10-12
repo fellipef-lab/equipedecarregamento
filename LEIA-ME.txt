@@ -33,8 +33,9 @@ PARTE 1 — FIREBASE (tudo grátis, sem cartão)
 
 1) Login dos usuários
    -> Menu "Authentication" -> "Vamos começar" -> aba "Método de login":
-      - ative "Anônimo"           (é assim que os motoristas entram, só com o nome)
-      - ative "E-mail/senha"      (é assim que o administrador entra)
+      - ative "E-mail/senha"      (é assim que TODOS entram: administrador e motoristas)
+      - deixe "Anônimo" ativado   (só para os motoristas da versão antiga criarem usuário e senha
+                                   sem perder o histórico; pode desligar quando todos já tiverem)
 
 2) Seu usuário de administrador
    -> Authentication -> aba "Usuários" -> "Adicionar usuário" -> seu e-mail e uma senha.
@@ -87,8 +88,16 @@ Sempre que mudar algum arquivo (ex.: config.js), suba de novo no GitHub
 PARTE 3 — USAR
 --------------------------------------------------------------
 
+TELA DE ENTRADA (igual para todos)
+  - Usuário e senha. O administrador digita o E-MAIL no campo "Usuário".
+  - O app reconhece sozinho quem é administrador e quem é motorista.
+
 ADMINISTRADOR
-  - Abra o link -> "Administrador" -> e-mail e senha do passo 2 (só uma vez).
+  - Abra o link -> seu e-mail e a senha do passo 2.
+  - Motoristas -> "Cadastrar motorista": nome, WhatsApp, usuário e senha -> botão para
+    enviar o acesso pelo WhatsApp.
+  - Motoristas -> "Editar": muda nome/WhatsApp, ou cria usuário/senha NOVOS (ex.: o motorista
+    esqueceu a senha). O acesso antigo para de funcionar na hora.
   - Carros -> "Cadastrar carro" -> "QR Codes" -> Imprimir -> cole uma etiqueta em cada carro.
   - "Liberar": avisa os motoristas DISPONÍVEIS hoje e oferece avisar pelo WhatsApp.
   - Mapa: posição dos carros em uso e trajeto.
@@ -99,9 +108,44 @@ MOTORISTAS
   - Mande o link. No celular:
       Android: Chrome -> menu (3 pontinhos) -> "Instalar app".
       iPhone:  Safari -> Compartilhar -> "Adicionar à Tela de Início".
-  - "Sou motorista" -> nome e WhatsApp (só na primeira vez) -> "Ativar avisos".
+  - "Criar minha conta" -> nome, WhatsApp, usuário e senha (só na primeira vez) -> "Ativar avisos".
+    Ou entra com o usuário e a senha que o administrador criou.
+  - Trocou de celular? É só entrar com o mesmo usuário e senha no celular novo.
+  - "Meus dados": trocar nome, WhatsApp e senha; ativar a digital/rosto.
   - Todo dia que sobrar: "Estou disponível".
   - Pegar/devolver: botão "ler QR Code" -> vistoria (5 fotos + vídeo + km + combustível).
+
+
+--------------------------------------------------------------
+PARTE 4 — IA QUE ENCONTRA AVARIAS (Gemini)
+--------------------------------------------------------------
+  A chave do Gemini NÃO pode ficar no app (o GitHub é público). Ela fica numa "ponte"
+  gratuita na Cloudflare, que só atende quem está logado no app.
+
+  A) Chave do Gemini
+     -> https://aistudio.google.com/apikey  (com a sua conta paga) -> "Create API key" -> copie.
+     -> Recomendado: no Google Cloud, crie um alerta/limite de gasto para esse projeto.
+
+  B) Ponte na Cloudflare (grátis)
+     -> https://dash.cloudflare.com -> crie a conta -> "Workers & Pages" -> "Create"
+        -> "Create Worker" -> nome: frota-ia -> "Deploy".
+     -> "Edit code" -> apague tudo -> cole o conteúdo do arquivo ia-ponte\worker.js -> "Deploy".
+     -> Volte ao Worker -> "Settings" -> "Variables and Secrets" -> "Add":
+          GEMINI_API_KEY    tipo "Secret"  -> a chave do passo A
+          FIREBASE_API_KEY  tipo "Text"    -> a apiKey que está no app\config.js
+          ORIGENS           tipo "Text"    -> https://fellipef-lab.github.io
+          MODELO            tipo "Text"    -> gemini-2.5-flash   (opcional)
+        -> "Deploy".
+     -> Copie o endereço do Worker (algo como https://frota-ia.SEU-NOME.workers.dev).
+
+  C) No app
+     -> app\config.js -> iaUrl: "https://frota-ia.SEU-NOME.workers.dev"
+     -> suba o config.js no GitHub.
+
+  Como funciona: ao devolver o carro, o app manda as fotos de retirada e devolução (mesmo
+  ângulo) para o Gemini, que aponta avarias novas. O motorista vê o resultado e pode comentar;
+  o administrador recebe o aviso na aba "Ocorrências" e vê tudo no relatório do uso
+  (botão "Comparar fotos com a IA" / "Analisar de novo"). A IA pode errar: confira as fotos.
 
 
 --------------------------------------------------------------
