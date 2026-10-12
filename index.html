@@ -155,8 +155,21 @@
   .video-qr { display: flex; gap: 12px; align-items: center; border: 1px solid #ccc; border-radius: 6px; padding: 8px; break-inside: avoid; }
   .video-qr img { width: 110px; height: 110px; image-rendering: pixelated; }
   .rodape { margin-top: 16px; }
+  .rel-cab { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; border-bottom: 3px solid #1f6feb; padding-bottom: 10px; margin-bottom: 14px; }
+  .rel-cab h1 { margin: 2px 0 0 !important; }
+  .rel-marca { font-size: 12px; font-weight: 700; color: #1f6feb; letter-spacing: .08em; text-transform: uppercase; }
+  .rel-sub { font-size: 15px; color: #333; margin-top: 2px; }
+  .rel-id { text-align: right; font-size: 12px; color: #555; white-space: nowrap; }
+  .folha { width: 100%; border-collapse: collapse; }
+  .folha > thead > tr > td, .folha > tfoot > tr > td, .folha > tbody > tr > td { padding: 0; border: 0; }
+  .folha-topo, .folha-pe { display: none; }
+  /* Relatório impresso sem o endereço do site, data e título que o navegador coloca nas bordas */
+  @page rel { size: A4; margin: 0; }
 
   @media print {
+    .relatorio { page: rel; padding: 0 14mm !important; }
+    .folha-topo { display: block; height: 12mm; }
+    .folha-pe { display: flex; justify-content: space-between; gap: 12px; margin-top: 6mm; padding: 3mm 0 8mm; border-top: 1px solid #ccc; font-size: 10px; color: #777; }
     header, .no-print, .toast, .tabs { display: none !important; }
     body { background: #fff; }
     main { max-width: none; padding: 0; }
