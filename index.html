@@ -504,7 +504,7 @@ function padrao() {
     const times = {};
     IDS.forEach(id => times[id] = { integrantes: (INTEGRANTES_INICIAIS[id] || []).slice(), lider: '', avarias: [] });
     return {
-        v: 11, times, carros: {}, cargas: {},
+        v: 11, times, carros: {}, cargas: {}, cargasApagadas: {}, // cargasApagadas: ids apagados, para o coletor não recriar
         config: { base: { data: ymd(segundaRecente()), passo: 1 }, dias: [1, 2, 3, 4, 5], feriados: {}, feriadosOff: [] }, // só seg–sex; feriados: extras {data:nome}; feriadosOff: feriados automáticos em que TRABALHA
         manual: { data: '', t: {} },
         lideranca: {
@@ -559,7 +559,7 @@ function norm(r) {
     if (r.manual && r.manual.data) {
         out.manual = { data: r.manual.data, t: (r.manual.t && typeof r.manual.t === 'object') ? Object.assign({}, r.manual.t) : {} };
     }
-    ['carros', 'cargas'].forEach(k => { if (r[k] && typeof r[k] === 'object') out[k] = r[k]; });
+    ['carros', 'cargas', 'cargasApagadas'].forEach(k => { if (r[k] && typeof r[k] === 'object') out[k] = r[k]; });
     out.usuarios = (r.usuarios && typeof r.usuarios === 'object' && Object.keys(r.usuarios).length) ? r.usuarios : out.usuarios;
     return out;
 }
@@ -659,7 +659,7 @@ const Sync = {
         } finally { clearTimeout(t); }
     },
     async escrever(path, val) {
-        const r = await fetch(this.url + '/app' + (path ? '/' + path : '') + '.json', {
+        const r = await fetch(this.url + '/app' + (path ? '/' + path.split('/').map(encodeURIComponent).join('/') : '') + '.json', {
             method: val == null ? 'DELETE' : 'PUT',
             body: val == null ? undefined : JSON.stringify(val)
         });
@@ -1466,7 +1466,11 @@ function corrigirCargaEq(id, v) {
 function apagarCargaFinalizada(id) {
     const c = S.cargas[id]; if (!podeEditar() || !c) return;
     if (!confirm(`Apagar o carregamento do carro ${c.carro} (${(TEAMS[c.eq] || {}).nome || '—'})?\nEle sai do ranking. Não dá para desfazer.`)) return;
-    delete S.cargas[id]; salvar('cargas/' + id); renderAll(); abrirCargasFinalizadas();
+    delete S.cargas[id];
+    S.cargasApagadas = S.cargasApagadas || {}; S.cargasApagadas[id] = new Date().toISOString();   // o coletor não recria mais
+    salvar('cargas/' + id, 'cargasApagadas/' + id);
+    if (Sync.url) fetch(Sync.url + '/coletor/' + encodeURIComponent(id) + '.json', { method: 'DELETE' }).catch(() => { });
+    renderAll(); abrirCargasFinalizadas();
 }
 function eqCarga(id, v) { if (!podeEditar() || !S.cargas[id]) return; S.cargas[id].eq = v; salvar('cargas/' + id); renderAll(); }
 function finalizarCarga(id) {
@@ -1519,6 +1523,7 @@ async function processarColetor() {
     if (!ev || typeof ev !== 'object') return;
     const mud = [], keys = Object.keys(ev).sort();
     for (const k of keys) {
+        if (S.cargasApagadas && S.cargasApagadas[k]) continue;   // apagado no ranking: não recriar
         const e = ev[k] || {}, nome = String(e.carro || '').trim(), f = chaveCarro(nome) ? garantirCarro(nome) : null;
         if (!f || !f.c) continue;
         const t = e.ts && !isNaN(new Date(e.ts)) ? new Date(e.ts).toISOString() : new Date().toISOString();
