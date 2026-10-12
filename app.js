@@ -1532,7 +1532,7 @@ const ABAS = [["carros", "🚗 Carros"], ["motoristas", "👥 Usuários"], ["map
 function telaAdmin() {
   const tab = S.tab;
   S.live = ["carros", "motoristas", "reservas", "ocorrencias"].includes(tab);
-  topo("🛠️ Administração");
+  topo("🛠️ Administração", [["👤 " + primeiroNome(meuAdmin().nome), abrirMinhaConta]]);
   const dias = +(getLS("frota_dias_alerta") || 3);
   const inativos = S.motoristas.filter(m => Date.now() - (ms(m.ultimoUso) || ms(m.criadoEm) || 0) > dias * 864e5);
   const livres = S.carros.filter(c => c.status === "disponivel").length;
@@ -1756,7 +1756,7 @@ function abaMotoristas(el) {
     }).join("")}</ul></div>`;
   $("#novoMot").onclick = () => go(telaMotoristaForm, null);
   $("#novoAdm").onclick = () => go(telaAdminForm, null);
-  $$("[data-meuacesso]", el).forEach(b => b.onclick = () => { S.tab = "ajustes"; setLS("frota_tab", S.tab); go(telaAdmin); });
+  $$("[data-meuacesso]", el).forEach(b => b.onclick = abrirMinhaConta);
   $$("[data-editadm]", el).forEach(b => b.onclick = () => go(telaAdminForm, S.admins.find(x => x.id === b.dataset.editadm)));
   $$("[data-deladm]", el).forEach(b => b.onclick = () => {
     const a = S.admins.find(x => x.id === b.dataset.deladm);
@@ -2225,7 +2225,6 @@ function abaReservas(el) {
 
 /* ---------- Aba Ajustes ---------- */
 function abaAjustes(el) {
-  const meuLogin = S.admins.find(a => a.id === S.user?.uid)?.login || "";
   el.innerHTML = `
     <div class="card">
       <h2>Alerta de inatividade</h2>
@@ -2241,45 +2240,9 @@ function abaAjustes(el) {
       <button class="btn sec" id="limpar">🧹 Apagar fotos e vídeos antigos</button>
     </div>
     ${cardInstalar()}
-    ${cardBiometria()}
-    <div class="card">
-      <h2>Minha conta</h2>
-      <p class="muted">Conectado como <b>${esc(meuLogin ? "usuário " + meuLogin : S.user?.email || "")}</b>. O login fica salvo neste aparelho.</p>
-      <label for="cSenhaAtual">Senha atual (necessária para qualquer mudança)</label>
-      <input id="cSenhaAtual" type="password" autocomplete="current-password">
-      <label for="cSenhaNova">Nova senha</label>
-      <input id="cSenhaNova" type="password" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
-      <label for="cSenhaNova2">Repita a nova senha</label>
-      <input id="cSenhaNova2" type="password" autocomplete="new-password">
-      <button class="btn sec" id="trocarSenha">🔑 Trocar senha</button>
-      ${meuLogin ? "" : `<label for="cEmailNovo" style="margin-top:16px">Novo e-mail de login</label>
-      <input id="cEmailNovo" type="email" inputmode="email" autocomplete="off">
-      <button class="btn sec" id="trocarEmail">✉️ Trocar e-mail</button>
-      <p class="muted">Ao trocar o e-mail, chega um link de confirmação no e-mail novo. O login só muda depois que você clicar nele; depois disso, entre de novo com o e-mail novo.</p>`}
-      <button class="btn bad" id="sair">Sair da administração</button>
-    </div>`;
+    ${cardBiometria()}`;
   ligarInstalar();
   ligarBiometria(() => go(telaAdmin));
-  const reautenticar = async () => {
-    const senha = $("#cSenhaAtual").value;
-    if (!senha) throw new Error("Digite a senha atual.");
-    await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(auth.currentUser.email, senha));
-  };
-  $("#trocarSenha").onclick = async () => {
-    const nova = $("#cSenhaNova").value;
-    if (nova.length < 6) return toast("A nova senha precisa ter pelo menos 6 caracteres");
-    if (nova !== $("#cSenhaNova2").value) return toast("As duas senhas novas não são iguais");
-    ocupado("Trocando a senha…");
-    const ok = await tentar(async () => { await reautenticar(); await updatePassword(auth.currentUser, nova); return true; });
-    if (ok) { ["#cSenhaAtual", "#cSenhaNova", "#cSenhaNova2"].forEach(s => { $(s).value = ""; }); toast("Senha alterada!", 4000); }
-  };
-  if ($("#trocarEmail")) $("#trocarEmail").onclick = async () => {
-    const email = $("#cEmailNovo").value.trim();
-    if (!/^\S+@\S+\.\S+$/.test(email)) return toast("Digite um e-mail válido");
-    ocupado("Enviando confirmação…");
-    const ok = await tentar(async () => { await reautenticar(); await verifyBeforeUpdateEmail(auth.currentUser, email); return true; });
-    if (ok) { $("#cSenhaAtual").value = ""; toast(`Link enviado para ${email}. Clique nele para concluir a troca (veja também o spam).`, 8000); }
-  };
   $("#saveDias").onclick = () => {
     const n = parseInt($("#dias").value, 10);
     if (!(n >= 1 && n <= 60)) return toast("Use entre 1 e 60 dias");
@@ -2305,7 +2268,70 @@ function abaAjustes(el) {
     });
     if (ok) toast(total ? `${total} arquivos apagados` : "Nada para apagar", 4000);
   };
-  $("#sair").onclick = () => { if (confirm("Sair da administração? Será preciso digitar usuário e senha de novo.")) sairDaConta(); };
+}
+
+/* ---------- Minha conta (botão com o nome, no canto do topo) ---------- */
+function meuAdmin() {
+  const a = S.admins.find(x => x.id === S.user?.uid) || {};
+  const email = S.user?.email || "";
+  return { login: a.login || "", nome: a.nome || a.login || email.split("@")[0] || "Administrador", mostrar: a.login ? "usuário " + a.login : email };
+}
+function abrirMinhaConta() {
+  const eu = meuAdmin();
+  const m = modal("");
+  const sheet = $(".sheet", m.el);
+  const menu = () => {
+    sheet.innerHTML = `<h2>👤 ${esc(eu.nome)}</h2>
+      <p class="muted">Conectado como <b>${esc(eu.mostrar)}</b>.</p>
+      <button class="btn sec" id="mcSenha">🔑 Trocar senha</button>
+      ${eu.login ? "" : `<button class="btn sec" id="mcEmail">✉️ Trocar e-mail</button>`}
+      <button class="btn bad" id="mcSair">Sair</button>
+      <button class="btn sec" data-fechar>Fechar</button>`;
+    $("#mcSenha", sheet).onclick = formSenha;
+    $("#mcEmail", sheet) && ($("#mcEmail", sheet).onclick = formEmail);
+    $("#mcSair", sheet).onclick = () => { if (confirm("Sair da administração? Será preciso digitar usuário e senha de novo.")) { m.fechar(); sairDaConta(); } };
+  };
+  const reautenticar = async () => {
+    const senha = $("#mcAtual", sheet).value;
+    if (!senha) throw new Error("Digite a senha atual.");
+    await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(auth.currentUser.email, senha));
+  };
+  const formSenha = () => {
+    sheet.innerHTML = `<h2>🔑 Trocar senha</h2>
+      <label for="mcAtual">Senha atual</label><div><input id="mcAtual" type="password" autocomplete="current-password"></div>
+      <label for="mcNova">Nova senha (mínimo 6 caracteres)</label><div><input id="mcNova" type="password" autocomplete="new-password"></div>
+      <label for="mcNova2">Repita a nova senha</label><div><input id="mcNova2" type="password" autocomplete="new-password"></div>
+      <button class="btn" id="mcOk">Salvar nova senha</button>
+      <button class="btn sec" id="mcVoltar">Voltar</button>`;
+    ["mcAtual", "mcNova", "mcNova2"].forEach(olhoSenha);
+    $("#mcVoltar", sheet).onclick = menu;
+    $("#mcOk", sheet).onclick = async () => {
+      const nova = $("#mcNova", sheet).value;
+      if (nova.length < 6) return toast("A nova senha precisa ter pelo menos 6 caracteres");
+      if (nova !== $("#mcNova2", sheet).value) return toast("As duas senhas novas não são iguais");
+      ocupado("Trocando a senha…");
+      const ok = await tentar(async () => { await reautenticar(); await updatePassword(auth.currentUser, nova); return true; });
+      if (ok) { m.fechar(); toast("Senha alterada!", 4000); }
+    };
+  };
+  const formEmail = () => {
+    sheet.innerHTML = `<h2>✉️ Trocar e-mail</h2>
+      <label for="mcEmailNovo">Novo e-mail</label><input id="mcEmailNovo" type="email" inputmode="email" autocomplete="off">
+      <label for="mcAtual">Senha atual</label><div><input id="mcAtual" type="password" autocomplete="current-password"></div>
+      <p class="muted">Chega um link de confirmação no e-mail novo. O login só muda depois que você clicar nele.</p>
+      <button class="btn" id="mcOk">Enviar confirmação</button>
+      <button class="btn sec" id="mcVoltar">Voltar</button>`;
+    olhoSenha("mcAtual");
+    $("#mcVoltar", sheet).onclick = menu;
+    $("#mcOk", sheet).onclick = async () => {
+      const email = $("#mcEmailNovo", sheet).value.trim();
+      if (!/^\S+@\S+\.\S+$/.test(email)) return toast("Digite um e-mail válido");
+      ocupado("Enviando confirmação…");
+      const ok = await tentar(async () => { await reautenticar(); await verifyBeforeUpdateEmail(auth.currentUser, email); return true; });
+      if (ok) { m.fechar(); toast(`Link enviado para ${email}. Clique nele para concluir a troca (veja também o spam).`, 8000); }
+    };
+  };
+  menu();
 }
 
 iniciar();
