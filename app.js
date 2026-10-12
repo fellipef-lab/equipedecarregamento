@@ -3,10 +3,11 @@
    Perfis: motorista (identifica-se, fica disponível, pega/devolve carro
    com QR Code + vistoria, reservas, GPS) e administrador.
    ===================================================================== */
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInAnonymously, signInWithEmailAndPassword, signOut,
   EmailAuthProvider, reauthenticateWithCredential, updatePassword, verifyBeforeUpdateEmail, sendPasswordResetEmail,
+  createUserWithEmailAndPassword, linkWithCredential, setPersistence, inMemoryPersistence,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -144,7 +145,7 @@ function modal(html, { onClose } = {}) {
 /* ================== ESTADO E NAVEGAÇÃO ================== */
 const S = {
   user: null, admin: false, me: null,
-  carros: [], motoristas: [], usosAtivos: [], reservas: [], convites: [], ocorrencias: [], usoAtivo: null,
+  carros: [], motoristas: [], usosAtivos: [], reservas: [], convites: [], ocorrencias: [], analises: [], usoAtivo: null,
   view: null, live: false, tab: getLS("frota_tab") || "carros",
   subs: [], pushSuportado: false, pushOk: getLS("frota_push") === "1",
 };
@@ -186,22 +187,185 @@ async function iniciar() {
   if (!CONFIGURADO) return telaSemConfig();
   S.user = await new Promise(r => { const off = onAuthStateChanged(auth, u => { off(); r(u); }); });
   await prepararPush();
-  const querAdmin = pedeAdmin(), cod = codigoDoLink(), conv = conviteDoLink();
-  if (querAdmin || cod || conv) limparHash();
-  const seguir = () => {
-    if (querAdmin || getLS("frota_modo") === "admin") {
-      if (cod || conv) setTimeout(() => toast(conv
-        ? "Este link é um convite de motorista: abra no celular do motorista."
-        : "Este aparelho está como administrador. Para pegar o carro, use o celular do motorista.", 6000), 800);
-      return entrarAdmin();
-    }
-    S.qrPendente = cod;
-    S.convitePendente = conv;
-    entrarMotorista();
-  };
+  const cod = codigoDoLink(), conv = conviteDoLink();
+  if (pedeAdmin() || cod || conv) limparHash();
+  S.qrPendente = cod;
+  S.convitePendente = conv;
+  // Sem sessão: tela de login (com convite, abre direto o cadastro)
+  if (!S.user) return conv ? go(telaCadastro, {}) : go(telaLogin);
   // Entrada com digital/rosto ativada neste aparelho: pede antes de mostrar qualquer coisa
-  if (bioSalva() && !bioLiberado()) return telaBloqueio(seguir);
-  seguir();
+  if (bioSalva() && !bioLiberado()) return telaBloqueio(entrarComSessao);
+  entrarComSessao();
+}
+
+/* ================== LOGIN (usuário e senha para todos) ================== */
+// Motorista: "usuário" (sem @). Por dentro, cada usuário vira um e-mail técnico guardado em /logins.
+// Administrador: entra com o próprio e-mail.
+const normLogin = s => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, ".").replace(/[^a-z0-9._-]/g, "");
+const emailMotorista = login => `m.${login}.${Date.now().toString(36)}@motoristas.frota.app`;
+const loginDeEmail = e => (/^m\.(.+)\.[a-z0-9]+@motoristas\.frota\.app$/.exec(String(e || "")) || [])[1] || "";
+const loginRef = login => doc(db, "logins", login);
+function erroLogin(e) {
+  const c = String(e?.code || "");
+  if (/invalid-credential|wrong-password|user-not-found|invalid-login/.test(c)) return "Usuário ou senha incorretos.";
+  if (/weak-password/.test(c)) return "Senha fraca: use pelo menos 6 caracteres.";
+  if (/too-many-requests/.test(c)) return "Muitas tentativas. Aguarde alguns minutos.";
+  if (/operation-not-allowed|admin-restricted/.test(c)) return "Login por usuário e senha não está ativado no Firebase (Authentication → Método de login → E-mail/senha).";
+  return erroMsg(e);
+}
+async function entrarComSessao() {
+  if (!S.user) return go(telaLogin);
+  if (S.user.isAnonymous) return entrarMotorista();   // motorista da versão antiga: vai criar usuário e senha
+  let ehAdmin;
+  try { ehAdmin = (await getDoc(doc(db, "admins", S.user.uid))).exists(); }
+  catch (e) { ehAdmin = getLS("frota_admin_uid") === S.user.uid; }   // sem internet: usa o que já sabia
+  return ehAdmin ? entrarAdmin() : entrarMotorista();
+}
+async function sairDaConta(msg) {
+  pararOuvintes(); pararRastreio();
+  await signOut(auth).catch(() => {});
+  S.user = null; S.me = null; S.admin = false;
+  setLS("frota_bio", null); setLS("frota_admin_uid", null); setLS("frota_modo", null);
+  go(telaLogin, msg);
+}
+function olhoSenha(id) {   // 👁 mostrar/esconder senha
+  const i = $("#" + id); if (!i) return;
+  const b = document.createElement("button"); b.type = "button"; b.className = "olho"; b.textContent = "👁"; b.title = "Mostrar senha";
+  b.onclick = () => { const m = i.type === "password"; i.type = m ? "text" : "password"; b.textContent = m ? "🙈" : "👁"; };
+  i.parentNode.style.position = "relative"; i.style.paddingRight = "48px"; i.insertAdjacentElement("afterend", b);
+}
+// Depois de entrar ou criar a conta: oferece a digital/rosto (uma vez)
+function sugerirBiometria() {
+  if (!bioApi() || bioSalva() || getLS("frota_bio_perguntado")) return;
+  setLS("frota_bio_perguntado", "1");
+  const m = modal(`<h2>👆 Entrar com digital ou rosto?</h2><p class="muted">Da próxima vez, é só a digital ou o rosto. Sem digitar senha.</p>
+    <button class="btn" id="sbSim">Ativar agora</button><button class="btn sec" data-fechar>Agora não</button>`);
+  $("#sbSim", m.el).onclick = () => { ativarBiometria(); m.fechar(); };   // a biometria é chamada direto no toque
+}
+function telaLogin(msg) {
+  S.view = null; S.live = false;
+  topo("🚗 Frota");
+  app.innerHTML = `
+    ${msg ? `<div class="alert">${esc(msg)}</div>` : ""}
+    <div class="card">
+      <h2>Entrar</h2>
+      <label for="lUser">Usuário</label>
+      <div><input id="lUser" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Seu usuário (administrador: seu e-mail)"></div>
+      <label for="lSenha">Senha</label>
+      <div><input id="lSenha" type="password" autocomplete="current-password"></div>
+      <button class="btn" id="lEntrar">Entrar</button>
+      <button class="btn sec" id="lEsqueci">Esqueci minha senha</button>
+    </div>
+    <div class="card center">
+      <p class="muted" style="margin-top:0">Primeiro acesso?</p>
+      <button class="btn ok" id="lCriar">✨ Criar minha conta</button>
+    </div>
+    ${cardInstalar()}`;
+  ligarInstalar(); olhoSenha("lSenha");
+  $("#lCriar").onclick = () => go(telaCadastro, {});
+  $("#lEsqueci").onclick = async () => {
+    const u = $("#lUser").value.trim();
+    if (u.includes("@")) {
+      ocupado("Enviando…");
+      const ok = await tentar(async () => { await sendPasswordResetEmail(auth, u); return true; });
+      if (ok) toast("Se esse e-mail for de um administrador, chega um link para criar uma nova senha. Veja também o spam.", 7000);
+      return;
+    }
+    modal(`<h2>Esqueci minha senha</h2><p class="muted">Peça ao administrador para criar uma senha nova para você (Administração → Motoristas → Editar).</p>
+      ${C.whatsappCentral ? `<a class="btn ok" target="_blank" rel="noopener" href="${waLink(C.whatsappCentral, `Olá! Esqueci a senha do app da frota. Meu usuário é: ${u || "(não lembro)"}`)}">💬 Pedir pelo WhatsApp</a>` : ""}
+      <button class="btn sec" data-fechar>Fechar</button>`);
+  };
+  const entrar = async () => {
+    const u = $("#lUser").value.trim(), senha = $("#lSenha").value;
+    if (!u || !senha) return toast("Preencha usuário e senha");
+    ocupado("Entrando…");
+    const user = await tentar(async () => {
+      let email = u;
+      if (!u.includes("@")) {
+        const lk = await getDoc(loginRef(normLogin(u)));
+        if (!lk.exists()) throw new Error("Usuário não encontrado. Confira ou toque em \"Criar minha conta\".");
+        email = lk.data().email;
+      }
+      try { return (await signInWithEmailAndPassword(auth, email, senha)).user; }
+      catch (e) { throw new Error(erroLogin(e)); }
+    });
+    if (!user) return;
+    S.user = user; marcarLiberado();
+    await entrarComSessao();
+    sugerirBiometria();
+  };
+  $("#lEntrar").onclick = entrar;
+  $("#lSenha").onkeydown = e => { if (e.key === "Enter") entrar(); };
+  $("#lUser").onkeydown = e => { if (e.key === "Enter") $("#lSenha").focus(); };
+}
+
+// Cadastro do motorista. modos: novo (sem conta) · upgrade (motorista antigo, sem senha) · completar (falta nome/WhatsApp)
+async function telaCadastro(op = {}) {
+  S.view = null; S.live = false;
+  const upgrade = !!S.user?.isAnonymous, completar = !!(S.user && !S.user.isAnonymous);
+  topo(upgrade ? "🔑 Crie seu acesso" : completar ? "Complete seu cadastro" : "✨ Criar conta", completar || upgrade ? [["Sair", () => sairDaConta()]] : [["Voltar", () => go(telaLogin)]]);
+  let pre = { nome: S.me?.nome || "", telefone: S.me?.telefone || "" };
+  if (!upgrade && !completar && S.convitePendente) {   // convite do administrador: já vem com nome e WhatsApp
+    try { const c = await getDoc(doc(db, "convites", S.convitePendente)); if (c.exists() && !c.data().usadoPor) pre = { nome: c.data().nome || "", telefone: c.data().telefone || "" }; } catch (e) {}
+  }
+  app.innerHTML = `
+    ${upgrade ? `<div class="alert"><b>🔑 Novidade: agora o app tem usuário e senha</b>Crie o seu uma única vez. Seu histórico continua o mesmo.</div>` : ""}
+    ${completar ? `<div class="alert"><b>Falta pouco</b>Confirme seu nome e WhatsApp.</div>` : ""}
+    <div class="card">
+      <label for="cNome">Seu nome</label>
+      <input id="cNome" autocomplete="name" maxlength="60" placeholder="Ex.: João Silva" value="${esc(pre.nome)}">
+      <label for="cTel">WhatsApp (com DDD)</label>
+      <input id="cTel" type="tel" inputmode="tel" autocomplete="tel" maxlength="20" placeholder="Ex.: 11 91234-5678" value="${esc(pre.telefone)}">
+      ${completar ? "" : `
+      <label for="cUser">Crie seu usuário</label>
+      <input id="cUser" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" placeholder="Ex.: joao.silva">
+      <p class="muted" style="margin:-6px 0 10px;font-size:12px">Só letras, números, ponto, traço. Sem espaço.</p>
+      <label for="cSenha">Crie uma senha (mínimo 6 caracteres)</label>
+      <div><input id="cSenha" type="password" autocomplete="new-password"></div>
+      <label for="cSenha2">Repita a senha</label>
+      <div><input id="cSenha2" type="password" autocomplete="new-password"></div>`}
+      <button class="btn ok" id="cSalvar">${completar ? "Salvar" : "Criar minha conta"}</button>
+    </div>`;
+  if (!completar) { olhoSenha("cSenha"); olhoSenha("cSenha2"); $("#cUser").oninput = e => { e.target.value = normLogin(e.target.value); }; }
+  if (!pre.nome && completar) { const l = loginDeEmail(S.user.email); if (l) $("#cNome").placeholder = "Seu nome (usuário: " + l + ")"; }
+  $("#cSalvar").onclick = async () => {
+    const nome = $("#cNome").value.trim().replace(/\s+/g, " "), telefone = $("#cTel").value.trim();
+    if (nome.length < 2) return toast("Digite seu nome");
+    if (soDigitos(telefone).length < 10) return toast("O WhatsApp é obrigatório: confira com DDD");
+    let login = completar ? (S.me?.login || loginDeEmail(S.user.email)) : normLogin($("#cUser").value), senha = "";
+    if (!completar) {
+      senha = $("#cSenha").value;
+      if (login.length < 3) return toast("O usuário precisa ter pelo menos 3 letras/números");
+      if (senha.length < 6) return toast("A senha precisa ter pelo menos 6 caracteres");
+      if (senha !== $("#cSenha2").value) return toast("As duas senhas não são iguais");
+    }
+    ocupado(completar ? "Salvando…" : "Criando sua conta…");
+    const ok = await tentar(async () => {
+      if (!completar) {
+        if ((await getDoc(loginRef(login))).exists()) throw new Error("Esse usuário já existe. Escolha outro.");
+        const email = emailMotorista(login);
+        try {
+          // motorista antigo: liga o usuário e senha à mesma conta (mantém o histórico)
+          S.user = upgrade ? (await linkWithCredential(S.user, EmailAuthProvider.credential(email, senha))).user
+                           : (await createUserWithEmailAndPassword(auth, email, senha)).user;
+        } catch (e) { throw new Error(erroLogin(e)); }
+        await setDoc(loginRef(login), { email, uid: S.user.uid, criadoEm: serverTimestamp() });
+      }
+      const snap = await getDoc(meRef());
+      if (snap.exists()) await updateDoc(meRef(), { nome, telefone, login });
+      else await setDoc(meRef(), { nome, telefone, login, disponivelEm: null, ultimoUso: serverTimestamp(), criadoEm: serverTimestamp(), tokens: [] });
+      if (S.convitePendente) {
+        try { await updateDoc(doc(db, "convites", S.convitePendente), { usadoPor: S.user.uid, usadoEm: serverTimestamp() }); } catch (e) {}
+        S.convitePendente = null;
+      }
+      return true;
+    }, "Não foi possível criar a conta. Tente de novo.");
+    if (!ok) return;
+    marcarLiberado();
+    toast(completar ? "Cadastro atualizado" : `Bem-vindo, ${primeiroNome(nome)}! Seu usuário é: ${login}`, 6000);
+    await entrarMotorista();
+    sugerirBiometria();
+  };
 }
 
 /* ---------- Entrada com digital ou rosto (WebAuthn) ---------- */
@@ -243,12 +407,12 @@ function ativarBiometria(depois) {
       let transports = [];
       try { transports = cred.response.getTransports?.() || []; } catch (e) {}
       const salvo = { id: b64u(cred.rawId), transports };
-      if (!S.admin) {   // motorista: PIN reserva, para o dia em que a digital falhar
+      if (S.user?.isAnonymous) {   // conta sem senha (versão antiga): PIN reserva, para o dia em que a digital falhar
         let pin = "";
         while (pin !== null && !/^\d{4}$/.test(pin)) pin = prompt("Crie um PIN de 4 números de reserva (para entrar se a digital/rosto falhar):", "");
         if (pin) salvo.pin = await hashPinBio(pin);
       }
-      setLS("frota_bio", JSON.stringify(salvo)); marcarLiberado();
+      setLS("frota_bio", JSON.stringify(salvo)); setLS("frota_bio_perguntado", "1"); marcarLiberado();
       toast("✅ Pronto! O app vai pedir sua digital ou rosto ao abrir.", 4500);
       depois?.();
     })
@@ -274,7 +438,9 @@ function telaBloqueio(seguir) {
     <h2>Confirme que é você</h2>
     <p class="muted">Use a digital ou o rosto cadastrado neste aparelho.</p>
     <button class="btn big" id="bioEntrar">👆 Entrar com digital / rosto</button>
-    <button class="btn sec" id="bioOutro">Não consigo usar a biometria</button></div>`;
+    <button class="btn sec" id="bioOutro">Entrar com a senha</button>
+    <button class="btn sec" id="bioTrocar">Entrar com outro usuário</button></div>`;
+  $("#bioTrocar").onclick = () => sairDaConta();
   const liberar = () => { marcarLiberado(); seguir(); };
   $("#bioEntrar").onclick = () => {
     const b = bioSalva(); if (!b) return liberar();
@@ -286,8 +452,8 @@ function telaBloqueio(seguir) {
   };
   $("#bioOutro").onclick = async () => {
     const b = bioSalva() || {};
-    if (getLS("frota_modo") === "admin" && S.user && !S.user.isAnonymous) {   // administrador: confirma com a senha
-      const senha = prompt(`Digite a senha de administrador (${S.user.email || ""}):`);
+    if (S.user && !S.user.isAnonymous && S.user.email) {   // confirma com a senha da própria conta
+      const senha = prompt(`Digite a sua senha (${loginDeEmail(S.user.email) || S.user.email}):`);
       if (!senha) return;
       ocupado("Conferindo…");
       const ok = await tentar(async () => { await signInWithEmailAndPassword(auth, S.user.email, senha); return true; }, "Senha incorreta.");
@@ -304,14 +470,13 @@ function telaBloqueio(seguir) {
 window.addEventListener("hashchange", () => {
   if (!CONFIGURADO) return;
   if (bioSalva() && !bioLiberado()) return;   // app bloqueado: só depois da digital/rosto
-  if (pedeAdmin()) { limparHash(); if (!S.admin) entrarAdmin(); return; }
+  if (pedeAdmin()) { limparHash(); return; }   // o administrador entra pela tela de login normal
   const conv = conviteDoLink();
   if (conv) {
     limparHash();
-    if (S.admin) return toast("Este link é um convite de motorista: abra no celular do motorista.", 6000);
-    if (S.me) return toast(`Este celular já está identificado como ${S.me.nome}.`, 5000);
+    if (S.user) return toast("Este celular já tem uma conta conectada. O convite é para criar uma conta nova.", 6000);
     S.convitePendente = conv;
-    return entrarMotorista();
+    return go(telaCadastro, {});
   }
   const cod = codigoDoLink();
   if (!cod) return;
@@ -407,47 +572,33 @@ function notificarLocal(titulo, corpo, tag) {
 
 /* ================== MOTORISTA ================== */
 async function entrarMotorista() {
-  setLS("frota_modo", "motorista");
   S.admin = false;
+  if (!S.user) return go(telaLogin);
   ocupado("Carregando…");
   const ok = await tentar(async () => {
-    if (S.user && !S.user.isAnonymous) { await signOut(auth); S.user = null; }
-    if (!S.user) S.user = (await signInAnonymously(auth)).user;
     const snap = await getDoc(meRef());
     S.me = snap.exists() ? dados(snap) : null;
     return true;
   });
   if (!ok) return telaSemConexao();
-  if (S.convitePendente) {
-    const conv = S.convitePendente; S.convitePendente = null;
-    if (S.me) toast(`Este celular já está identificado como ${S.me.nome}.`, 5000);
-    else if (await aceitarConvite(conv)) toast(`Bem-vindo, ${primeiroNome(S.me.nome)}!`, 4000);
+  if (S.user.isAnonymous) {
+    // motorista da versão antiga (entrava só com o nome): cria usuário e senha mantendo o histórico
+    if (!S.me) return sairDaConta();
+    return go(telaCadastro, {});
   }
-  if (!S.me) return go(telaIdentificar);
+  if (S.convitePendente) { S.convitePendente = null; toast("Você já tem uma conta: o convite não é necessário.", 4000); }
+  if (!S.me) {
+    // só completa o cadastro se o usuário ainda aponta para esta conta (o administrador pode ter trocado o acesso)
+    const login = loginDeEmail(S.user.email);
+    const lk = login ? await getDoc(loginRef(login)).catch(() => null) : null;
+    if (!lk?.exists() || lk.data().uid !== S.user.uid) return sairDaConta("Seu acesso foi alterado ou removido pelo administrador. Entre com o usuário e a senha novos.");
+  }
+  if (!S.me || soDigitos(S.me.telefone).length < 10) return go(telaCadastro, {});   // falta nome ou WhatsApp
   semEsperar(updateDoc(meRef(), { ultimoUso: serverTimestamp() }));
   if (messaging && S.pushOk && Notification.permission === "granted") registrarToken().catch(() => {});
   ouvirMotorista();
   go(telaMotorista);
   processarQRPendente();
-}
-
-// Convite criado pelo administrador: o motorista entra já identificado (nome e WhatsApp do cadastro)
-async function aceitarConvite(cod) {
-  ocupado("Ativando seu acesso…");
-  return tentar(async () => {
-    const ref = doc(db, "convites", cod);
-    const c = await getDoc(ref);
-    if (!c.exists() || c.data().usadoPor) throw new Error("Convite inválido ou já usado. Peça um novo ao administrador.");
-    const d = c.data({ serverTimestamps: "estimate" });
-    if (Date.now() - (ms(d.criadoEm) || 0) > 7 * 864e5) throw new Error("Convite vencido. Peça um novo ao administrador.");
-    const novo = { nome: d.nome, telefone: d.telefone || "", disponivelEm: null, ultimoUso: serverTimestamp(), criadoEm: serverTimestamp(), tokens: [] };
-    const b = writeBatch(db);
-    b.set(meRef(), novo);
-    b.update(ref, { usadoPor: S.user.uid, usadoEm: serverTimestamp() });
-    await b.commit();
-    S.me = { id: S.user.uid, ...novo, ultimoUso: Date.now(), criadoEm: Date.now() };
-    return true;
-  }, "Não foi possível ativar o convite. Tente de novo.");
 }
 
 function ouvirMotorista() {
@@ -471,7 +622,10 @@ function ouvirMotorista() {
     S.carros = lista(snap).sort(porNome);
     reRender();
   });
-  ouvir(meRef(), snap => { if (snap.exists()) { S.me = dados(snap); reRender(); } });
+  ouvir(meRef(), snap => {
+    if (snap.exists()) { S.me = dados(snap); reRender(); }
+    else if (S.me && !snap.metadata.fromCache) sairDaConta("Seu acesso foi alterado pelo administrador. Entre com o usuário e a senha novos.");
+  });
   ouvir(query(collection(db, "usos"), where("motoristaId", "==", uid), where("fim", "==", null)), snap => {
     S.usoAtivo = snap.docs.length ? dados(snap.docs[0]) : null;
     S.usoAtivo ? iniciarRastreio() : pararRastreio();
@@ -484,47 +638,50 @@ function ouvirMotorista() {
   });
 }
 
-function telaIdentificar(editar = false) {
-  topo(editar ? "Meus dados" : "🧑‍✈️ Motorista", editar ? [["Voltar", () => go(telaMotorista)]] : []);
+// "Meus dados" do motorista: nome, WhatsApp, senha e digital/rosto
+function telaIdentificar() {
+  topo("Meus dados", [["Voltar", () => go(telaMotorista)]]);
+  const usuario = S.me?.login || loginDeEmail(S.user?.email);
   app.innerHTML = `
-    ${!editar && S.qrPendente ? `<div class="alert"><b>📷 Quase lá!</b>Antes de pegar o carro, identifique-se. Depois disso a retirada continua sozinha.</div>` : ""}
     <div class="card">
-      <h2>${editar ? "Meus dados" : "Identifique-se"}</h2>
-      ${editar ? "" : `<p class="muted">Faça isso uma única vez. Seus dados ficam salvos neste celular.</p>`}
+      <h2>Meus dados</h2>
+      ${usuario ? `<p class="muted" style="margin-top:-6px">Seu usuário: <b>${esc(usuario)}</b></p>` : ""}
       <label for="nome">Seu nome</label>
       <input id="nome" autocomplete="name" placeholder="Ex.: João Silva" maxlength="60" value="${esc(S.me?.nome || "")}">
       <label for="tel">WhatsApp (com DDD)</label>
       <input id="tel" type="tel" inputmode="tel" autocomplete="tel" placeholder="Ex.: 11 91234-5678" maxlength="20" value="${esc(S.me?.telefone || "")}">
       <button class="btn" id="salvar">Salvar</button>
     </div>
-    ${editar ? cardBiometria() : ""}`;
-  if (editar) ligarBiometria(() => go(telaIdentificar, true));
-  const salvar = async () => {
-    const nome = $("#nome").value.trim().replace(/\s+/g, " ");
-    const telefone = $("#tel").value.trim();
+    <div class="card">
+      <h2>🔑 Trocar minha senha</h2>
+      <label for="sAtual">Senha atual</label><div><input id="sAtual" type="password" autocomplete="current-password"></div>
+      <label for="sNova">Nova senha (mínimo 6 caracteres)</label><div><input id="sNova" type="password" autocomplete="new-password"></div>
+      <button class="btn sec" id="sTrocar">Trocar senha</button>
+    </div>
+    ${cardBiometria()}`;
+  ligarBiometria(() => go(telaIdentificar));
+  olhoSenha("sAtual"); olhoSenha("sNova");
+  $("#salvar").onclick = () => {
+    const nome = $("#nome").value.trim().replace(/\s+/g, " "), telefone = $("#tel").value.trim();
     if (nome.length < 2) return toast("Digite seu nome");
-    if (telefone && soDigitos(telefone).length < 10) return toast("Confira o WhatsApp com DDD");
-    if (editar) {
-      semEsperar(updateDoc(meRef(), { nome, telefone }));
-      S.me = { ...S.me, nome, telefone };
-      toast("Dados atualizados");
-      return go(telaMotorista);
-    }
-    const novo = { nome, telefone, disponivelEm: null, ultimoUso: serverTimestamp(), criadoEm: serverTimestamp(), tokens: [] };
-    if (S.qrPendente) {
-      // Vai pegar um carro logo em seguida: o cadastro precisa estar salvo no servidor antes
-      ocupado("Salvando…");
-      if (!(await tentar(async () => { await setDoc(meRef(), novo); return true; }))) return;
-    } else semEsperar(setDoc(meRef(), novo));
-    S.me = { id: S.user.uid, ...novo, ultimoUso: Date.now(), criadoEm: Date.now() };
-    toast("Bem-vindo, " + primeiroNome(nome) + "!");
-    ouvirMotorista();
+    if (soDigitos(telefone).length < 10) return toast("O WhatsApp é obrigatório: confira com DDD");
+    semEsperar(updateDoc(meRef(), { nome, telefone }));
+    S.me = { ...S.me, nome, telefone };
+    toast("Dados atualizados");
     go(telaMotorista);
-    processarQRPendente();
   };
-  $("#salvar").onclick = salvar;
-  $("#nome").onkeydown = e => { if (e.key === "Enter") $("#tel").focus(); };
-  $("#tel").onkeydown = e => { if (e.key === "Enter") salvar(); };
+  $("#sTrocar").onclick = async () => {
+    const atual = $("#sAtual").value, nova = $("#sNova").value;
+    if (!atual) return toast("Digite a senha atual");
+    if (nova.length < 6) return toast("A nova senha precisa ter pelo menos 6 caracteres");
+    ocupado("Trocando a senha…");
+    const ok = await tentar(async () => {
+      try { await reauthenticateWithCredential(S.user, EmailAuthProvider.credential(S.user.email, atual)); }
+      catch (e) { throw new Error("Senha atual incorreta."); }
+      await updatePassword(S.user, nova); return true;
+    });
+    if (ok) { $("#sAtual").value = ""; $("#sNova").value = ""; toast("✅ Senha alterada", 4000); }
+  };
 }
 
 function reservaTxt(r, comNome = true) {
@@ -535,8 +692,8 @@ function reservaTxt(r, comNome = true) {
 function telaMotorista() {
   S.live = true;
   const me = S.me;
-  if (!me) return go(telaIdentificar);
-  topo("🧑‍✈️ " + primeiroNome(me.nome), [["Meus dados", () => go(telaIdentificar, true)]]);
+  if (!me) return go(telaCadastro, {});
+  topo("🧑‍✈️ " + primeiroNome(me.nome), [["Meus dados", () => go(telaIdentificar, true)], ["Sair", () => { if (confirm("Sair da sua conta neste celular?")) sairDaConta(); }]]);
   const disponivel = me.disponivelEm === hoje();
   const u = S.usoAtivo;
   let h = "";
@@ -1195,6 +1352,7 @@ async function salvarVistoria(V) {
   if (V.tipo === "devolucao") { pararRastreio(); toast("Carro devolvido. Obrigado!", 4000); }
   else toast("Vistoria salva. Boa viagem!", 4000);
   go(telaMotorista);
+  if (V.tipo === "devolucao" && IA_ATIVA()) setTimeout(() => iaPosDevolucao(V.usoId), 1500);   // IA compara retirada x devolução
 }
 
 /* ---------- Rastreamento por GPS do celular ---------- */
@@ -1302,48 +1460,11 @@ async function entrarAdmin() {
   try { ehAdmin = (await getDoc(doc(db, "admins", S.user.uid))).exists(); }
   catch (e) { ehAdmin = getLS("frota_admin_uid") === S.user.uid; } // sem internet: usa o que já sabia
   ocupado(false);
-  if (!ehAdmin) {
-    toast("Este usuário não é administrador", 4000);
-    await signOut(auth).catch(() => {}); S.user = null;
-    return go(telaLogin);
-  }
+  if (!ehAdmin) return entrarMotorista();   // conta comum: entra como motorista
   setLS("frota_admin_uid", S.user.uid);
-  setLS("frota_modo", "admin"); // daqui em diante este aparelho abre direto no painel
   S.admin = true;
   ouvirAdmin();
   go(telaAdmin);
-}
-
-function telaLogin() {
-  topo("🔒 Administrador", [["Sou motorista", () => { setLS("frota_modo", null); entrarMotorista(); }]]);
-  app.innerHTML = `
-    <div class="card">
-      <h2>Entrar</h2>
-      <p class="muted">Use o e-mail e a senha de administrador. Você só precisa entrar uma vez neste aparelho.</p>
-      <label for="lEmail">E-mail</label>
-      <input id="lEmail" type="email" autocomplete="username" inputmode="email">
-      <label for="lSenha">Senha</label>
-      <input id="lSenha" type="password" autocomplete="current-password">
-      <button class="btn" id="lEntrar">Entrar</button>
-      <button class="btn sec" id="lEsqueci">Esqueci minha senha</button>
-    </div>`;
-  $("#lEsqueci").onclick = async () => {
-    const email = $("#lEmail").value.trim();
-    if (!email) return toast("Digite seu e-mail no campo acima");
-    ocupado("Enviando…");
-    const ok = await tentar(async () => { await sendPasswordResetEmail(auth, email); return true; });
-    if (ok) toast("Se esse e-mail for de um administrador, chega um link para criar uma nova senha. Veja também o spam.", 7000);
-  };
-  const entrar = async () => {
-    const email = $("#lEmail").value.trim(), senha = $("#lSenha").value;
-    if (!email || !senha) return toast("Preencha e-mail e senha");
-    if (S.user?.isAnonymous && !confirm("Este aparelho está identificado como motorista. Entrar como administrador desconecta o motorista deste aparelho. Continuar?")) return;
-    ocupado("Entrando…");
-    const u = await tentar(async () => (await signInWithEmailAndPassword(auth, email, senha)).user);
-    if (u) { S.user = u; entrarAdmin(); }
-  };
-  $("#lEntrar").onclick = entrar;
-  $("#lSenha").onkeydown = e => { if (e.key === "Enter") entrar(); };
 }
 
 function ouvirAdmin() {
@@ -1381,6 +1502,20 @@ function ouvirAdmin() {
     S.ocorrencias = lista(s);
     reRender();
   });
+  let primeiraIa = true;
+  ouvir(query(collection(db, "analises"), orderBy("criadoEm", "desc"), limit(100)), s => {
+    // análise da IA chegando com avaria: aviso na hora
+    if (!primeiraIa) s.docChanges().forEach(ch => {
+      if (ch.type !== "added") return;
+      const a = ch.doc.data();
+      if (!(a.avarias || []).length) return;
+      toast(`🤖 IA: possível avaria nova no ${a.carroNome} (${a.motoristaNome})`, 8000);
+      notificarLocal("🤖 Possível avaria nova", `${a.carroNome} · ${a.motoristaNome} · ${a.avarias.length} ponto(s)`, "ia-" + ch.doc.id);
+    });
+    primeiraIa = false;
+    S.analises = lista(s);
+    reRender();
+  });
 }
 
 const ABAS = [["carros", "🚗 Carros"], ["motoristas", "🧑‍✈️ Motoristas"], ["mapa", "🗺️ Mapa"], ["ocorrencias", "⚠️ Ocorrências"], ["historico", "📄 Histórico"], ["reservas", "📅 Reservas"], ["ajustes", "⚙️ Ajustes"]];
@@ -1400,7 +1535,7 @@ function telaAdmin() {
       ${inativos.map(m => `${esc(m.nome)} (último uso ${ago(m.ultimoUso)})`).join("<br>")}</div>`;
   }
   h += `<div class="tabs">${ABAS.map(([k, t]) => {
-    const abertasOc = S.ocorrencias.filter(o => o.status !== "resolvida").length;
+    const abertasOc = S.ocorrencias.filter(o => o.status !== "resolvida").length + S.analises.filter(a => (a.avarias || []).length && !a.revisado).length;
     const n = k === "carros" ? ` ${livres}/${S.carros.length}` : k === "motoristas" ? ` ${dispHoje}/${S.motoristas.length}` : k === "mapa" ? ` ${S.usosAtivos.length}` : k === "ocorrencias" && abertasOc ? ` ${abertasOc}` : "";
     return `<button data-t="${k}" class="${tab === k ? "on" : ""}">${t}${n}</button>`;
   }).join("")}</div><div id="aba"></div>`;
@@ -1427,12 +1562,20 @@ function itemOcorrencia(o, comAcoes) {
 }
 function abaOcorrencias(el) {
   const abertas = S.ocorrencias.filter(o => o.status !== "resolvida"), resolvidas = S.ocorrencias.filter(o => o.status === "resolvida").slice(0, 30);
+  const iaPend = S.analises.filter(a => (a.avarias || []).length && !a.revisado);
   el.innerHTML = `
+    ${iaPend.length ? `<div class="card" style="border:2px solid var(--warn)"><h2>🤖 Avarias apontadas pela IA (${iaPend.length})</h2>
+      <ul class="list">${iaPend.map(a => `<li class="item"><div class="info">
+        <div class="title">${esc(a.carroNome)} ${esc(a.placa || "")} · ${esc(a.motoristaNome)}</div>
+        <div class="muted">${fmt(a.criadoEm)} · ${a.avarias.length} ponto(s): ${a.avarias.map(x => esc(x.local || x.foto)).join(", ")}</div>
+        ${a.comentarioMotorista ? `<div>💬 ${esc(a.comentarioMotorista)}</div>` : ""}
+      </div><div class="acts"><button class="mini" data-relo="${a.usoId}">Ver fotos</button><button class="mini ok" data-revisar="${a.usoId}">✔ Revisado</button></div></li>`).join("")}</ul></div>` : ""}
     <div class="card"><h2>⚠️ Abertas (${abertas.length})</h2>
       ${abertas.length ? `<ul class="list">${abertas.map(o => itemOcorrencia(o, true)).join("")}</ul>` : `<div class="empty">Nenhuma ocorrência aberta. 👍</div>`}</div>
     <div class="card"><h2>Resolvidas (últimas)</h2>
       ${resolvidas.length ? `<ul class="list">${resolvidas.map(o => itemOcorrencia(o, true)).join("")}</ul>` : `<div class="empty">Nenhuma.</div>`}</div>`;
   $$("[data-relo]", el).forEach(b => b.onclick = () => go(telaRelatorio, b.dataset.relo));
+  $$("[data-revisar]", el).forEach(b => b.onclick = () => { semEsperar(updateDoc(doc(db, "analises", b.dataset.revisar), { revisado: true, revisadoEm: serverTimestamp() })); toast("Marcado como revisado"); });
   $$("[data-resolver]", el).forEach(b => b.onclick = () => {
     const nota = prompt("Como foi resolvido? (opcional)", "");
     if (nota === null) return;
@@ -1582,7 +1725,7 @@ function abaMotoristas(el) {
             ${uso ? `<span class="pill uso">Com ${esc(uso.carroNome)}</span>` : m.disponivelEm === hoje() ? `<span class="pill ok">Disponível hoje</span>` : ""}
             ${inativo ? `<span class="pill warn">Inativo</span>` : ""}
           </div>
-          <div class="muted">${m.telefone ? esc(m.telefone) + " · " : ""}Último uso: ${ago(m.ultimoUso)}</div>
+          <div class="muted">${m.login ? `👤 ${esc(m.login)}` : `<span class="pill warn">Sem usuário</span>`} · ${m.telefone ? esc(m.telefone) + " · " : ""}Último uso: ${ago(m.ultimoUso)}</div>
         </div>
         <div class="acts">
           ${m.telefone ? `<a class="mini" target="_blank" rel="noopener" href="${waLink(m.telefone)}">💬 WhatsApp</a>` : ""}
@@ -1597,46 +1740,110 @@ function abaMotoristas(el) {
   $$("[data-del]", el).forEach(b => b.onclick = () => {
     const m = S.motoristas.find(x => x.id === b.dataset.del);
     if (S.usosAtivos.some(u => u.motoristaId === m.id)) return toast("Esse motorista está com um carro. Encerre o uso antes.");
-    if (confirm(`Remover o motorista ${m.nome}?`)) semEsperar(deleteDoc(doc(db, "motoristas", m.id)));
+    if (!confirm(`Remover o motorista ${m.nome}? Ele não consegue mais entrar no app.`)) return;
+    const b = writeBatch(db);
+    b.delete(doc(db, "motoristas", m.id));
+    if (m.login) b.delete(loginRef(m.login));
+    semEsperar(b.commit());
   });
+}
+
+// Cria a conta de login de um motorista sem desconectar o administrador (usa um 2º "app" só na memória)
+let AUTH_CRIADOR = null;
+async function criarContaMotorista(login, senha) {
+  if (!AUTH_CRIADOR) {
+    const a = getApps().find(x => x.name === "criador") || initializeApp(C.firebase, "criador");
+    AUTH_CRIADOR = getAuth(a);
+    await setPersistence(AUTH_CRIADOR, inMemoryPersistence);
+  }
+  const email = emailMotorista(login);
+  try { return { uid: (await createUserWithEmailAndPassword(AUTH_CRIADOR, email, senha)).user.uid, email }; }
+  catch (e) { throw new Error(erroLogin(e)); }
+  finally { signOut(AUTH_CRIADOR).catch(() => {}); }
 }
 
 function telaMotoristaForm(m) {
   topo(m ? "Editar motorista" : "Cadastrar motorista", [["Voltar", () => go(telaAdmin)]]);
+  const comCarro = m && S.usosAtivos.some(u => u.motoristaId === m.id);
   app.innerHTML = `
     <div class="card">
+      ${m ? "<h2>Dados</h2>" : ""}
       <label for="mNome">Nome</label>
       <input id="mNome" maxlength="60" placeholder="Ex.: João Silva" value="${esc(m?.nome || "")}">
       <label for="mTel">WhatsApp (com DDD)</label>
       <input id="mTel" type="tel" inputmode="tel" maxlength="20" placeholder="Ex.: 11 91234-5678" value="${esc(m?.telefone || "")}">
-      <button class="btn" id="mSalvar">${m ? "Salvar" : "Cadastrar e gerar convite"}</button>
-      ${m ? "" : `<p class="muted">O motorista recebe um link. Ao abrir no celular dele, entra já identificado, sem digitar nada.</p>`}
+      ${m ? `<button class="btn" id="mSalvar">Salvar</button>` : ""}
     </div>
-    ${m ? `<div class="card"><h2>📲 Trocou de celular?</h2>
-      <p class="muted">Gere um link para o celular novo. Quando o motorista abrir, o cadastro passa para o aparelho novo e o antigo é desligado.</p>
-      <button class="btn sec" id="mNovoCel">Gerar link para o novo celular</button></div>` : ""}`;
-  $("#mSalvar").onclick = () => {
+    <div class="card">
+      <h2>🔑 ${m ? "Usuário e senha" : "Acesso ao app"}</h2>
+      ${m ? `<p class="muted">${m.login ? `Usuário atual: <b>${esc(m.login)}</b>` : "Este motorista ainda não tem usuário (versão antiga)."}
+        Para trocar o usuário ou criar uma senha nova (ex.: ele esqueceu), preencha abaixo. Ele vai precisar entrar de novo com o acesso novo.</p>` : ""}
+      <label for="mUser">Usuário</label>
+      <input id="mUser" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" placeholder="Ex.: joao.silva" value="${esc(m?.login || "")}">
+      <label for="mSenha">${m ? "Nova senha" : "Senha"} (mínimo 6 caracteres)</label>
+      <div><input id="mSenha" type="password" autocomplete="new-password"></div>
+      ${comCarro ? `<div class="alert">Este motorista está com um carro agora. Troque o acesso depois que ele devolver.</div>` : ""}
+      <button class="btn ${m ? "sec" : "ok"}" id="mAcesso" ${comCarro ? "disabled" : ""}>${m ? "Salvar novo acesso" : "Cadastrar motorista"}</button>
+      ${m ? "" : `<p class="muted">Depois é só mandar o usuário e a senha para ele (tem botão de WhatsApp). O próprio motorista também pode criar a conta dele em "Criar minha conta".</p>`}
+    </div>`;
+  olhoSenha("mSenha");
+  $("#mUser").oninput = e => { e.target.value = normLogin(e.target.value); };
+  const lerDados = () => {
     const nome = $("#mNome").value.trim().replace(/\s+/g, " "), telefone = $("#mTel").value.trim();
-    if (nome.length < 2) return toast("Digite o nome");
-    if (telefone && soDigitos(telefone).length < 10) return toast("Confira o WhatsApp com DDD");
-    if (m) {
-      semEsperar(updateDoc(doc(db, "motoristas", m.id), { nome, telefone }));
-      toast("Motorista atualizado");
-      return go(telaAdmin);
-    }
-    criarConvite({ nome, telefone });
+    if (nome.length < 2) { toast("Digite o nome"); return null; }
+    if (soDigitos(telefone).length < 10) { toast("O WhatsApp é obrigatório: confira com DDD"); return null; }
+    return { nome, telefone };
   };
-  $("#mNovoCel") && ($("#mNovoCel").onclick = () => criarConvite({ nome: m.nome, telefone: m.telefone || "", substitui: m.id }));
+  if (m) $("#mSalvar").onclick = () => {
+    const d = lerDados(); if (!d) return;
+    semEsperar(updateDoc(doc(db, "motoristas", m.id), d));
+    toast("Motorista atualizado");
+    go(telaAdmin);
+  };
+  $("#mAcesso").onclick = async () => {
+    const d = lerDados(); if (!d) return;
+    const login = normLogin($("#mUser").value), senha = $("#mSenha").value;
+    if (login.length < 3) return toast("O usuário precisa ter pelo menos 3 letras/números");
+    if (senha.length < 6) return toast("A senha precisa ter pelo menos 6 caracteres");
+    if (m && S.usosAtivos.some(u => u.motoristaId === m.id)) return toast("Esse motorista está com um carro. Troque o acesso depois da devolução.");
+    if (m && !confirm(`Trocar o acesso de ${m.nome}? O usuário/senha antigos deixam de funcionar.`)) return;
+    ocupado(m ? "Trocando o acesso…" : "Cadastrando…");
+    const ok = await tentar(async () => {
+      const lk = await getDoc(loginRef(login));
+      if (lk.exists() && lk.data().uid !== m?.id) throw new Error("Esse usuário já existe. Escolha outro.");
+      const conta = await criarContaMotorista(login, senha);
+      const b = writeBatch(db);
+      // a conta nova recebe o cadastro (o histórico de usos antigos continua no relatório)
+      const { id, ...resto } = m || {};
+      b.set(doc(db, "motoristas", conta.uid), m
+        ? { ...resto, ...d, login }
+        : { ...d, login, disponivelEm: null, ultimoUso: serverTimestamp(), criadoEm: serverTimestamp(), tokens: [] });
+      b.set(loginRef(login), { email: conta.email, uid: conta.uid, criadoEm: serverTimestamp() });
+      if (m) {
+        b.delete(doc(db, "motoristas", m.id));
+        if (m.login && m.login !== login) b.delete(loginRef(m.login));
+        S.reservas.filter(r => r.motoristaId === m.id).forEach(r => b.update(doc(db, "reservas", r.id), { motoristaId: conta.uid }));
+      }
+      await b.commit();
+      return true;
+    }, "Não foi possível salvar o acesso. Tente de novo.");
+    if (!ok) return;
+    go(telaAcessoCriado, { nome: d.nome, telefone: d.telefone, login, senha });
+  };
 }
 
-function criarConvite(d) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const codigo = Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  semEsperar(setDoc(doc(db, "convites", codigo), {
-    nome: d.nome, telefone: d.telefone || "", substitui: d.substitui || null,
-    usadoPor: null, usadoEm: null, criadoEm: serverTimestamp(),
-  }));
-  go(telaConvite, { codigo, nome: d.nome, telefone: d.telefone });
+function telaAcessoCriado(a) {
+  topo("✅ Acesso pronto", [["Voltar", () => go(telaAdmin)]]);
+  const msg = `Olá ${primeiroNome(a.nome)}! Seu acesso ao app da frota:\n${linkBase()}\nUsuário: ${a.login}\nSenha: ${a.senha}\n(Você pode trocar a senha em "Meus dados".)`;
+  app.innerHTML = `
+    <div class="card center">
+      <h2>${esc(a.nome)}</h2>
+      <p>Usuário: <b>${esc(a.login)}</b><br>Senha: <b>${esc(a.senha)}</b></p>
+      <p class="muted">Anote ou envie agora: a senha não aparece de novo.</p>
+      <a class="btn ok" target="_blank" rel="noopener" href="${waLink(a.telefone, msg)}">💬 Enviar pelo WhatsApp</a>
+      <button class="btn sec" id="aVoltar">Concluir</button>
+    </div>`;
+  $("#aVoltar").onclick = () => go(telaAdmin);
 }
 
 function telaConvite(c) {
@@ -1765,16 +1972,17 @@ async function telaRelatorio(usoId) {
   topo("📄 Relatório", [["Voltar", () => go(telaAdmin)]]);
   app.innerHTML = `<div class="empty">Carregando relatório…</div>`;
   const r = await tentar(async () => {
-    const [u, vs, ps, oc] = await Promise.all([
+    const [u, vs, ps, oc, ia] = await Promise.all([
       getDoc(doc(db, "usos", usoId)),
       getDocs(query(collection(db, "vistorias"), where("usoId", "==", usoId))),
       getDocs(query(collection(db, "usos", usoId, "pontos"), orderBy("t"), limit(3000))),
       getDocs(query(collection(db, "ocorrencias"), where("usoId", "==", usoId))).catch(() => null),
+      getDoc(doc(db, "analises", usoId)).catch(() => null),
     ]);
-    return { u: dados(u), vs: lista(vs), ps: lista(ps), oc: oc ? lista(oc) : [] };
+    return { u: dados(u), vs: lista(vs), ps: lista(ps), oc: oc ? lista(oc) : [], ia: ia && ia.exists() ? dados(ia) : null };
   });
   if (!r) return;
-  const { u, vs, ps, oc } = r;
+  const { u, vs, ps, oc, ia } = r;
   const ret = vs.find(v => v.tipo === "retirada"), dev = vs.find(v => v.tipo === "devolucao");
   let dist = 0;
   for (let i = 1; i < ps.length; i++) dist += distM(ps[i - 1], ps[i]);
@@ -1797,9 +2005,17 @@ async function telaRelatorio(usoId) {
       ${blocoVistoria("Vistoria de retirada", ret)}
       ${blocoVistoria("Vistoria de devolução", dev)}
       ${oc.length ? `<h2>Ocorrências durante o uso (${oc.length})</h2><ul class="list">${oc.sort((a, b) => ms(a.criadoEm) - ms(b.criadoEm)).map(o => itemOcorrencia(o, false)).join("")}</ul>` : ""}
+      ${ia || (ret && dev) ? `<h2>🤖 Análise de avarias pela IA</h2>
+        ${ia ? `<p class="muted">Analisado em ${fmtCompleto(ia.criadoEm)} (${esc(ia.analisadoPor || "")})</p>${avariasIaHtml(ia)}` : `<p class="muted">Ainda não analisado.</p>`}
+        ${IA_ATIVA() && ret && dev ? `<button class="btn sec no-print" id="iaRodar">🤖 ${ia ? "Analisar de novo" : "Comparar fotos com a IA"}</button>` : ""}` : ""}
       <p class="muted rodape">Relatório gerado em ${fmtCompleto(Date.now())}</p>
     </article>`;
   $("#imprimir").onclick = () => window.print();
+  $("#iaRodar") && ($("#iaRodar").onclick = async () => {
+    ocupado("🤖 A IA está comparando as fotos… (pode levar até 1 minuto)");
+    const a = await tentar(() => analisarAvarias(usoId), "Não foi possível analisar agora.");
+    if (a) { toast(a.avarias.length ? `🤖 ${a.avarias.length} possível(is) avaria(s) nova(s)` : "🤖 Nenhuma avaria nova encontrada", 5000); telaRelatorio(usoId); }
+  });
   carregarMidiasDaTela().finally(() => {
     const b = $("#imprimir");
     if (b) { b.disabled = false; b.textContent = "🖨️ Imprimir / salvar em PDF"; }
@@ -1916,14 +2132,7 @@ function abaAjustes(el) {
     });
     if (ok) toast(total ? `${total} arquivos apagados` : "Nada para apagar", 4000);
   };
-  $("#sair").onclick = async () => {
-    if (!confirm("Sair da administração? Será preciso digitar e-mail e senha de novo.")) return;
-    pararOuvintes();
-    await signOut(auth).catch(() => {});
-    S.user = null; S.admin = false;
-    setLS("frota_admin_uid", null);
-    go(telaLogin); // continua como aparelho de administrador; "Sou motorista" troca o perfil
-  };
+  $("#sair").onclick = () => { if (confirm("Sair da administração? Será preciso digitar e-mail e senha de novo.")) sairDaConta(); };
 }
 
 iniciar();
