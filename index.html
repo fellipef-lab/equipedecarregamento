@@ -1442,7 +1442,31 @@ function renderCarros() {
     box.innerHTML = `<h2>🏆 Carros e ranking</h2>
         <div class="sub">Cada carro finalizado soma 1 para a equipe · frota: ${frotaL.filter(c => c.c).length} que carregamos, ${frotaL.filter(c => !c.c).length} que não carregamos</div>
         <div class="lid-cols"><div><h3>Em carregamento</h3>${andam}${form}</div>
-        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros</div></div></div>`;
+        <div><h3>Ranking</h3><div class="tb-btns" style="margin-bottom:8px">${tabs}</div><div class="lid-tw"><table>${rk}</table></div><div class="sub" style="margin:6px 0 0">Total no período: ${fin.length} carros</div>
+        <button class="btn" style="margin-top:8px" onclick="abrirCargasFinalizadas()">📋 Ver carregamentos${ed ? ' / corrigir' : ''}</button></div></div>`;
+}
+/* Carregamentos finalizados do período do ranking: corrigir a equipe ou apagar (ex.: testes) */
+const PER_TXT = { dia: 'de hoje', semana: 'desta semana', mes: 'deste mês', ano: 'deste ano' };
+function abrirCargasFinalizadas() {
+    const ed = podeEditar(), per = PER_TXT[rkPer] || '';
+    const L = cargasL().filter(c => c.fim && TEAMS[c.eq] && noPeriodo(c.fim, rkPer)).sort((a, b) => a.fim < b.fim ? 1 : -1);
+    const opts = sel => idEquipes().map(i => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(TEAMS[i].nome)}</option>`).join('');
+    const linhas = L.map(c => `<div class="u-linha" style="grid-template-columns:1fr ${ed ? '130px auto' : 'auto'}"><span class="u-nome">🚛 ${esc(c.carro)}<br><i>${fmtBR(ymd(new Date(c.fim)))} ${hhmm(c.fim)}${c.via === 'coletor' ? ' · coletor' : ''}</i></span>`
+        + (ed ? `<select class="m-input" title="Equipe" onchange="corrigirCargaEq('${c.id}',this.value)">${opts(c.eq)}</select><button class="btn btn-aviso" title="Apagar" onclick="apagarCargaFinalizada('${c.id}')">🗑</button>`
+              : `<span style="color:${COR_EQ[c.eq] || '#aaa'};font-weight:700">${esc(TEAMS[c.eq].nome)}</span>`) + '</div>').join('')
+        || `<p class="m-info">Nenhum carregamento finalizado ${per}.</p>`;
+    abrirModal('Carregamentos ' + per, `<p class="m-info">${L.length} carregamento(s) finalizado(s) ${per}. Cada um soma 1 ponto para a equipe no ranking.${ed ? ' Troque a equipe se foi registrado errado, ou apague (🗑) os que foram teste.' : ''} Para ver outro período, troque Hoje/Semana/Mês/Ano no ranking.</p>
+        <div class="u-lista" style="max-height:340px;overflow:auto">${linhas}</div>
+        <div class="m-acoes"><button class="btn" onclick="fecharModal()">Fechar</button></div>`);
+}
+function corrigirCargaEq(id, v) {
+    const c = S.cargas[id]; if (!podeEditar() || !c || !TEAMS[v]) return;
+    c.eq = v; salvar('cargas/' + id); renderAll(); abrirCargasFinalizadas();
+}
+function apagarCargaFinalizada(id) {
+    const c = S.cargas[id]; if (!podeEditar() || !c) return;
+    if (!confirm(`Apagar o carregamento do carro ${c.carro} (${(TEAMS[c.eq] || {}).nome || '—'})?\nEle sai do ranking. Não dá para desfazer.`)) return;
+    delete S.cargas[id]; salvar('cargas/' + id); renderAll(); abrirCargasFinalizadas();
 }
 function eqCarga(id, v) { if (!podeEditar() || !S.cargas[id]) return; S.cargas[id].eq = v; salvar('cargas/' + id); renderAll(); }
 function finalizarCarga(id) {
