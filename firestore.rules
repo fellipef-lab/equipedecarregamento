@@ -19,16 +19,37 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Motoristas: cada um só cria/edita o próprio cadastro
+    // O usuário de login aponta para esta conta?
+    function loginMeu(l) {
+      return l is string && exists(/databases/$(database)/documents/logins/$(l))
+        && get(/databases/$(database)/documents/logins/$(l)).data.uid == request.auth.uid;
+    }
+
+    // Motoristas: o admin cadastra/edita qualquer um; cada motorista só cria/edita o próprio
     match /motoristas/{uid} {
       allow read: if eu(uid) || admin();
-      allow create: if eu(uid)
-        && request.resource.data.keys().hasOnly(['nome', 'telefone', 'disponivelEm', 'ultimoUso', 'criadoEm', 'tokens'])
+      allow create: if admin() || (eu(uid)
+        && request.resource.data.keys().hasOnly(['nome', 'telefone', 'login', 'disponivelEm', 'ultimoUso', 'criadoEm', 'tokens'])
+        && loginMeu(request.resource.data.login)
         && request.resource.data.nome is string
-        && request.resource.data.nome.size() >= 2 && request.resource.data.nome.size() <= 60;
+        && request.resource.data.nome.size() >= 2 && request.resource.data.nome.size() <= 60);
       allow update: if admin()
-        || (eu(uid) && soMuda(['nome', 'telefone', 'disponivelEm', 'ultimoUso', 'tokens']));
+        || (eu(uid) && soMuda(['nome', 'telefone', 'login', 'disponivelEm', 'ultimoUso', 'tokens'])
+            && (request.resource.data.get('login', null) == resource.data.get('login', null)
+                || loginMeu(request.resource.data.login)));
       allow delete: if admin();
+    }
+
+    // Usuários de login (usuário -> conta). Qualquer um consulta um usuário pelo nome exato
+    // (necessário para entrar), mas ninguém consegue listar todos.
+    match /logins/{login} {
+      allow get: if true;
+      allow list: if admin();
+      allow create: if admin()
+        || (logado() && request.resource.data.uid == request.auth.uid
+            && request.resource.data.keys().hasOnly(['email', 'uid', 'criadoEm'])
+            && request.resource.data.email == request.auth.token.email);
+      allow update, delete: if admin();
     }
 
     // Carros: todos veem; só o admin cadastra. O motorista só pode pegar um carro
@@ -86,7 +107,7 @@ service cloud.firestore {
     // Convites de motorista (criados pelo administrador). O motorista só consegue abrir
     // um convite pelo código exato (não dá para listar) e marcar como usado por ele mesmo.
     match /convites/{cod} {
-      allow get: if logado();
+      allow get: if true;   // abre o cadastro já com nome e WhatsApp, antes de criar a conta
       allow list: if admin();
       allow create, delete: if admin();
       allow update: if logado()
@@ -114,6 +135,16 @@ service cloud.firestore {
         && request.resource.data.status == 'aberta'
         && uso(request.resource.data.usoId).motoristaId == request.auth.uid;
       allow update, delete: if admin();
+    }
+
+    // Análise de avarias pela IA (uma por uso: o id é o do uso)
+    match /analises/{usoId} {
+      allow read: if admin() || (logado() && resource.data.motoristaId == request.auth.uid);
+      allow create: if admin()
+        || (logado() && request.resource.data.motoristaId == request.auth.uid && uso(usoId).motoristaId == request.auth.uid);
+      allow update: if admin()
+        || (logado() && resource.data.motoristaId == request.auth.uid && soMuda(['comentarioMotorista', 'comentadoEm']));
+      allow delete: if admin();
     }
 
     // Reservas: todos veem (para evitar conflito); cada um cria/cancela a sua
