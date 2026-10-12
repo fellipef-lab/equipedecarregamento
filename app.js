@@ -145,7 +145,7 @@ function modal(html, { onClose } = {}) {
 /* ================== ESTADO E NAVEGAÇÃO ================== */
 const S = {
   user: null, admin: false, me: null,
-  carros: [], motoristas: [], usosAtivos: [], reservas: [], convites: [], ocorrencias: [], analises: [], usoAtivo: null,
+  carros: [], motoristas: [], admins: [], usosAtivos: [], reservas: [], convites: [], ocorrencias: [], analises: [], usoAtivo: null,
   view: null, live: false, tab: getLS("frota_tab") || "carros",
   subs: [], pushSuportado: false, pushOk: getLS("frota_push") === "1",
 };
@@ -392,7 +392,7 @@ function msgBio(e) {
 }
 function ativarBiometria(depois) {
   if (!bioApi()) return toast("Este celular/navegador não permite digital ou rosto aqui.", 4000);
-  const nome = S.admin ? (S.user?.email || "Administrador") : (S.me?.nome || "Motorista");
+  const nome = S.admin ? (S.admins.find(a => a.id === S.user?.uid)?.nome || S.user?.email || "Administrador") : (S.me?.nome || "Motorista");
   const opcoes = rk => ({ publicKey: {
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     rp: { name: "Frota", id: location.hostname },
@@ -1471,6 +1471,15 @@ function ouvirAdmin() {
   pararOuvintes();
   ouvir(collection(db, "carros"), s => { S.carros = lista(s).sort(porNome); reRender(); });
   ouvir(collection(db, "motoristas"), s => { S.motoristas = lista(s).sort(porNome); reRender(); });
+  // Administradores. Se o meu acesso de administrador for removido, sai da conta.
+  S.subs.push(onSnapshot(collection(db, "admins"), s => {
+    S.admins = lista(s).sort((a, b) => (a.id !== S.user?.uid) - (b.id !== S.user?.uid) || String(a.nome || "").localeCompare(b.nome || ""));
+    if (!s.metadata.fromCache && S.user && !S.admins.some(a => a.id === S.user.uid)) return sairDaConta("Seu acesso de administrador foi removido.");
+    reRender();
+  }, e => {
+    if (e?.code === "permission-denied") sairDaConta("Seu acesso de administrador foi removido.");
+    else console.warn("tempo real:", e);
+  }));
   ouvir(collection(db, "convites"), s => {
     S.convites = lista(s).sort((a, b) => ms(b.criadoEm) - ms(a.criadoEm));
     // Convite usado: apaga o convite e, se era troca de celular, o cadastro do aparelho antigo
@@ -1518,7 +1527,7 @@ function ouvirAdmin() {
   });
 }
 
-const ABAS = [["carros", "🚗 Carros"], ["motoristas", "🧑‍✈️ Motoristas"], ["mapa", "🗺️ Mapa"], ["ocorrencias", "⚠️ Ocorrências"], ["historico", "📄 Histórico"], ["reservas", "📅 Reservas"], ["ajustes", "⚙️ Ajustes"]];
+const ABAS = [["carros", "🚗 Carros"], ["motoristas", "👥 Usuários"], ["mapa", "🗺️ Mapa"], ["ocorrencias", "⚠️ Ocorrências"], ["historico", "📄 Histórico"], ["reservas", "📅 Reservas"], ["ajustes", "⚙️ Ajustes"]];
 
 function telaAdmin() {
   const tab = S.tab;
@@ -1704,7 +1713,8 @@ function abaMotoristas(el) {
   const ordenados = [...S.motoristas].sort((a, b) => ((b.disponivelEm === hoje()) - (a.disponivelEm === hoje())) || porNome(a, b));
   const pendentes = S.convites.filter(c => !c.usadoPor);
   el.innerHTML = `
-    <button class="btn" id="novoMot" style="margin-bottom:14px">＋ Cadastrar motorista</button>
+    <button class="btn" id="novoMot">＋ Cadastrar motorista</button>
+    <button class="btn sec" id="novoAdm" style="margin-bottom:14px">＋ Cadastrar administrador</button>
     ${pendentes.length ? `<div class="card"><h2>📨 Convites aguardando</h2><ul class="list">${pendentes.map(c => {
       const vencido = Date.now() - (ms(c.criadoEm) || 0) > 7 * 864e5;
       return `<li class="item"><div class="info">
@@ -1729,11 +1739,33 @@ function abaMotoristas(el) {
         </div>
         <div class="acts">
           ${m.telefone ? `<a class="mini" target="_blank" rel="noopener" href="${waLink(m.telefone)}">💬 WhatsApp</a>` : ""}
-          <button class="mini" data-edit="${m.id}">Editar</button>
+          <button class="mini" data-edit="${m.id}">✏️ Editar / senha</button>
           <button class="mini del" data-del="${m.id}" title="Remover">✕</button>
         </div></li>`;
-    }).join("")}</ul>` : `<div class="empty">Nenhum motorista ainda. Cadastre ou mande o link do app para eles.</div>`}</div>`;
+    }).join("")}</ul>` : `<div class="empty">Nenhum motorista ainda. Cadastre ou mande o link do app para eles.</div>`}</div>
+    <div class="card"><h2>🛡️ Administradores</h2>
+    <ul class="list">${S.admins.map(a => {
+      const eu = a.id === S.user?.uid;
+      return `<li class="item"><div class="info">
+          <div class="title">${esc(a.nome || (eu ? S.user.email : "") || "Administrador")} ${eu ? `<span class="pill ok">Você</span>` : ""}</div>
+          <div class="muted">${a.login ? `👤 ${esc(a.login)}` : eu ? esc(S.user.email || "") : "entra com e-mail"}</div>
+        </div><div class="acts">
+          ${eu ? `<button class="mini" data-meuacesso>Minha senha</button>` : `<button class="mini" data-editadm="${a.id}">✏️ Editar / senha</button>
+          <button class="mini del" data-deladm="${a.id}" title="Remover">✕</button>`}
+        </div></li>`;
+    }).join("")}</ul></div>`;
   $("#novoMot").onclick = () => go(telaMotoristaForm, null);
+  $("#novoAdm").onclick = () => go(telaAdminForm, null);
+  $$("[data-meuacesso]", el).forEach(b => b.onclick = () => { S.tab = "ajustes"; setLS("frota_tab", S.tab); go(telaAdmin); });
+  $$("[data-editadm]", el).forEach(b => b.onclick = () => go(telaAdminForm, S.admins.find(x => x.id === b.dataset.editadm)));
+  $$("[data-deladm]", el).forEach(b => b.onclick = () => {
+    const a = S.admins.find(x => x.id === b.dataset.deladm);
+    if (!confirm(`Remover o administrador ${a.nome || a.login || ""}? Ele não consegue mais entrar no painel.`)) return;
+    const lote = writeBatch(db);
+    lote.delete(doc(db, "admins", a.id));
+    if (a.login) lote.delete(loginRef(a.login));
+    semEsperar(lote.commit());
+  });
   $$("[data-edit]", el).forEach(b => b.onclick = () => go(telaMotoristaForm, S.motoristas.find(x => x.id === b.dataset.edit)));
   $$("[data-verconv]", el).forEach(b => b.onclick = () => { const c = S.convites.find(x => x.id === b.dataset.verconv); go(telaConvite, { codigo: c.id, nome: c.nome, telefone: c.telefone }); });
   $$("[data-delconv]", el).forEach(b => b.onclick = () => { if (confirm("Cancelar este convite? O link deixa de funcionar.")) semEsperar(deleteDoc(doc(db, "convites", b.dataset.delconv))); });
@@ -1748,15 +1780,16 @@ function abaMotoristas(el) {
   });
 }
 
-// Cria a conta de login de um motorista sem desconectar o administrador (usa um 2º "app" só na memória)
+// Cria a conta de login de um motorista ou administrador sem desconectar quem está no painel
+// (usa um 2º "app" só na memória)
 let AUTH_CRIADOR = null;
-async function criarContaMotorista(login, senha) {
+async function criarConta(login, senha, adm) {
   if (!AUTH_CRIADOR) {
     const a = getApps().find(x => x.name === "criador") || initializeApp(C.firebase, "criador");
     AUTH_CRIADOR = getAuth(a);
     await setPersistence(AUTH_CRIADOR, inMemoryPersistence);
   }
-  const email = emailMotorista(login);
+  const email = adm ? `a.${login}.${Date.now().toString(36)}@admins.frota.app` : emailMotorista(login);
   try { return { uid: (await createUserWithEmailAndPassword(AUTH_CRIADOR, email, senha)).user.uid, email }; }
   catch (e) { throw new Error(erroLogin(e)); }
   finally { signOut(AUTH_CRIADOR).catch(() => {}); }
@@ -1811,7 +1844,7 @@ function telaMotoristaForm(m) {
     const ok = await tentar(async () => {
       const lk = await getDoc(loginRef(login));
       if (lk.exists() && lk.data().uid !== m?.id) throw new Error("Esse usuário já existe. Escolha outro.");
-      const conta = await criarContaMotorista(login, senha);
+      const conta = await criarConta(login, senha);
       const b = writeBatch(db);
       // a conta nova recebe o cadastro (o histórico de usos antigos continua no relatório)
       const { id, ...resto } = m || {};
@@ -1834,16 +1867,81 @@ function telaMotoristaForm(m) {
 
 function telaAcessoCriado(a) {
   topo("✅ Acesso pronto", [["Voltar", () => go(telaAdmin)]]);
-  const msg = `Olá ${primeiroNome(a.nome)}! Seu acesso ao app da frota:\n${linkBase()}\nUsuário: ${a.login}\nSenha: ${a.senha}\n(Você pode trocar a senha em "Meus dados".)`;
+  const msg = `Olá ${primeiroNome(a.nome)}! Seu acesso ao app da frota:\n${linkBase()}\nUsuário: ${a.login}\nSenha: ${a.senha}\n(Você pode trocar a senha depois, dentro do app.)`;
   app.innerHTML = `
     <div class="card center">
       <h2>${esc(a.nome)}</h2>
       <p>Usuário: <b>${esc(a.login)}</b><br>Senha: <b>${esc(a.senha)}</b></p>
       <p class="muted">Anote ou envie agora: a senha não aparece de novo.</p>
-      <a class="btn ok" target="_blank" rel="noopener" href="${waLink(a.telefone, msg)}">💬 Enviar pelo WhatsApp</a>
+      ${a.telefone ? `<a class="btn ok" target="_blank" rel="noopener" href="${waLink(a.telefone, msg)}">💬 Enviar pelo WhatsApp</a>` : ""}
+      <button class="btn sec" id="aCopiar">📋 Copiar usuário e senha</button>
       <button class="btn sec" id="aVoltar">Concluir</button>
     </div>`;
+  $("#aCopiar").onclick = async () => {
+    try { await navigator.clipboard.writeText(msg); toast("Copiado"); } catch (e) { toast("Não deu para copiar: anote o usuário e a senha"); }
+  };
   $("#aVoltar").onclick = () => go(telaAdmin);
+}
+
+// Cadastro / edição de outro administrador (usuário e senha, como os motoristas)
+function telaAdminForm(a) {
+  topo(a ? "Editar administrador" : "Novo administrador", [["Voltar", () => go(telaAdmin)]]);
+  app.innerHTML = `
+    <div class="card">
+      <label for="aNome">Nome</label>
+      <input id="aNome" maxlength="60" placeholder="Ex.: Maria Souza" value="${esc(a?.nome || "")}">
+      <label for="aTel">WhatsApp (opcional, para mandar o acesso)</label>
+      <input id="aTel" type="tel" inputmode="tel" maxlength="20" placeholder="Ex.: 11 91234-5678" value="${esc(a?.telefone || "")}">
+      ${a ? `<button class="btn" id="aSalvar">Salvar</button>` : ""}
+    </div>
+    <div class="card">
+      <h2>🔑 ${a ? "Usuário e senha" : "Acesso ao painel"}</h2>
+      ${a ? `<p class="muted">${a.login ? `Usuário atual: <b>${esc(a.login)}</b>.` : "Hoje ele entra com e-mail."}
+        Para trocar o usuário ou criar uma senha nova, preencha abaixo. O acesso antigo para de funcionar.</p>` : `<p class="muted">Administrador vê e altera tudo no painel: carros, motoristas, relatórios e outros administradores.</p>`}
+      <label for="aUser">Usuário</label>
+      <input id="aUser" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30" placeholder="Ex.: maria.adm" value="${esc(a?.login || "")}">
+      <label for="aSenha">${a ? "Nova senha" : "Senha"} (mínimo 6 caracteres)</label>
+      <div><input id="aSenha" type="password" autocomplete="new-password"></div>
+      <button class="btn ${a ? "sec" : "ok"}" id="aAcesso">${a ? "Salvar novo acesso" : "Cadastrar administrador"}</button>
+    </div>`;
+  olhoSenha("aSenha");
+  $("#aUser").oninput = e => { e.target.value = normLogin(e.target.value); };
+  const lerDados = () => {
+    const nome = $("#aNome").value.trim().replace(/\s+/g, " "), telefone = $("#aTel").value.trim();
+    if (nome.length < 2) { toast("Digite o nome"); return null; }
+    if (telefone && soDigitos(telefone).length < 10) { toast("Confira o WhatsApp com DDD"); return null; }
+    return { nome, telefone };
+  };
+  if (a) $("#aSalvar").onclick = () => {
+    const d = lerDados(); if (!d) return;
+    semEsperar(updateDoc(doc(db, "admins", a.id), d));
+    toast("Administrador atualizado");
+    go(telaAdmin);
+  };
+  $("#aAcesso").onclick = async () => {
+    const d = lerDados(); if (!d) return;
+    const login = normLogin($("#aUser").value), senha = $("#aSenha").value;
+    if (login.length < 3) return toast("O usuário precisa ter pelo menos 3 letras/números");
+    if (senha.length < 6) return toast("A senha precisa ter pelo menos 6 caracteres");
+    if (a && !confirm(`Trocar o acesso de ${a.nome || a.login || "este administrador"}? O acesso antigo deixa de funcionar.`)) return;
+    ocupado(a ? "Trocando o acesso…" : "Cadastrando…");
+    const ok = await tentar(async () => {
+      const lk = await getDoc(loginRef(login));
+      if (lk.exists() && lk.data().uid !== a?.id) throw new Error("Esse usuário já existe. Escolha outro.");
+      const conta = await criarConta(login, senha, true);
+      const lote = writeBatch(db);
+      lote.set(doc(db, "admins", conta.uid), { ativo: true, ...d, login, email: conta.email, criadoEm: serverTimestamp() });
+      lote.set(loginRef(login), { email: conta.email, uid: conta.uid, criadoEm: serverTimestamp() });
+      if (a) {
+        lote.delete(doc(db, "admins", a.id));
+        if (a.login && a.login !== login) lote.delete(loginRef(a.login));
+      }
+      await lote.commit();
+      return true;
+    }, "Não foi possível salvar o acesso. Tente de novo.");
+    if (!ok) return;
+    go(telaAcessoCriado, { nome: d.nome, telefone: d.telefone, login, senha });
+  };
 }
 
 function telaConvite(c) {
@@ -2046,6 +2144,7 @@ function abaReservas(el) {
 
 /* ---------- Aba Ajustes ---------- */
 function abaAjustes(el) {
+  const meuLogin = S.admins.find(a => a.id === S.user?.uid)?.login || "";
   el.innerHTML = `
     <div class="card">
       <h2>Alerta de inatividade</h2>
@@ -2060,18 +2159,11 @@ function abaAjustes(el) {
       <input id="limpDias" type="number" min="7" max="3650" value="90">
       <button class="btn sec" id="limpar">🧹 Apagar fotos e vídeos antigos</button>
     </div>
-    <div class="card">
-      <h2>Links do app</h2>
-      <p class="muted" style="margin-bottom:4px">Para os motoristas (abre direto como motorista):</p>
-      <input readonly value="${esc(linkBase())}" onclick="this.select()">
-      <p class="muted" style="margin-bottom:4px">Administrador (só para você; neste aparelho já abre direto no painel):</p>
-      <input readonly value="${esc(linkBase())}#admin" onclick="this.select()">
-      ${cardInstalar()}
-    </div>
+    ${cardInstalar()}
     ${cardBiometria()}
     <div class="card">
       <h2>Minha conta</h2>
-      <p class="muted">Conectado como <b>${esc(S.user?.email || "")}</b>. O login fica salvo neste aparelho.</p>
+      <p class="muted">Conectado como <b>${esc(meuLogin ? "usuário " + meuLogin : S.user?.email || "")}</b>. O login fica salvo neste aparelho.</p>
       <label for="cSenhaAtual">Senha atual (necessária para qualquer mudança)</label>
       <input id="cSenhaAtual" type="password" autocomplete="current-password">
       <label for="cSenhaNova">Nova senha</label>
@@ -2079,10 +2171,10 @@ function abaAjustes(el) {
       <label for="cSenhaNova2">Repita a nova senha</label>
       <input id="cSenhaNova2" type="password" autocomplete="new-password">
       <button class="btn sec" id="trocarSenha">🔑 Trocar senha</button>
-      <label for="cEmailNovo" style="margin-top:16px">Novo e-mail de login</label>
+      ${meuLogin ? "" : `<label for="cEmailNovo" style="margin-top:16px">Novo e-mail de login</label>
       <input id="cEmailNovo" type="email" inputmode="email" autocomplete="off">
       <button class="btn sec" id="trocarEmail">✉️ Trocar e-mail</button>
-      <p class="muted">Ao trocar o e-mail, chega um link de confirmação no e-mail novo. O login só muda depois que você clicar nele; depois disso, entre de novo com o e-mail novo.</p>
+      <p class="muted">Ao trocar o e-mail, chega um link de confirmação no e-mail novo. O login só muda depois que você clicar nele; depois disso, entre de novo com o e-mail novo.</p>`}
       <button class="btn bad" id="sair">Sair da administração</button>
     </div>`;
   ligarInstalar();
@@ -2100,7 +2192,7 @@ function abaAjustes(el) {
     const ok = await tentar(async () => { await reautenticar(); await updatePassword(auth.currentUser, nova); return true; });
     if (ok) { ["#cSenhaAtual", "#cSenhaNova", "#cSenhaNova2"].forEach(s => { $(s).value = ""; }); toast("Senha alterada!", 4000); }
   };
-  $("#trocarEmail").onclick = async () => {
+  if ($("#trocarEmail")) $("#trocarEmail").onclick = async () => {
     const email = $("#cEmailNovo").value.trim();
     if (!/^\S+@\S+\.\S+$/.test(email)) return toast("Digite um e-mail válido");
     ocupado("Enviando confirmação…");
@@ -2132,7 +2224,7 @@ function abaAjustes(el) {
     });
     if (ok) toast(total ? `${total} arquivos apagados` : "Nada para apagar", 4000);
   };
-  $("#sair").onclick = () => { if (confirm("Sair da administração? Será preciso digitar e-mail e senha de novo.")) sairDaConta(); };
+  $("#sair").onclick = () => { if (confirm("Sair da administração? Será preciso digitar usuário e senha de novo.")) sairDaConta(); };
 }
 
 iniciar();
