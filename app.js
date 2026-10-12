@@ -2022,10 +2022,12 @@ async function mostrarTrajeto(usoId) {
 
 /* ---------- Aba Histórico + relatório ---------- */
 async function abaHistorico(el) {
-  el.innerHTML = `<input id="hBusca" placeholder="🔎 Buscar por carro, placa ou motorista"><div class="card" id="hLista"><div class="empty">Carregando…</div></div>`;
+  el.innerHTML = `<input id="hBusca" placeholder="🔎 Buscar por carro, placa ou motorista"><div class="card" id="hLista"><div class="empty">Carregando…</div></div>
+    <button class="btn sec" id="hLimpar">🧹 Limpar histórico</button>`;
+  $("#hLimpar").onclick = limparHistorico;
   const snap = await tentar(() => getDocs(query(collection(db, "usos"), orderBy("inicio", "desc"), limit(100))));
   if (!snap || !$("#hLista")) return;
-  const usos = lista(snap);
+  let usos = lista(snap);
   const desenhar = () => {
     const b = $("#hBusca").value.trim().toLowerCase();
     const f = usos.filter(u => !b || `${u.carroNome} ${u.placa} ${u.motoristaNome}`.toLowerCase().includes(b));
@@ -2033,11 +2035,74 @@ async function abaHistorico(el) {
       <li class="item click" data-rel="${u.id}"><div class="info">
         <div class="title">${esc(u.carroNome)} · ${esc(u.motoristaNome)}</div>
         <div class="muted">${fmt(u.inicio)} → ${u.fim ? fmt(u.fim) + " · " + duracao(u.inicio, u.fim) : "em andamento"}</div>
-      </div><span class="mini">📄 Relatório</span></li>`).join("")}</ul>` : `<div class="empty">Nenhum uso encontrado.</div>`;
+      </div><div class="acts"><span class="mini">📄 Relatório</span>
+        ${u.fim ? `<button class="mini del" data-apagaruso="${u.id}" title="Apagar este uso">✕</button>` : ""}</div></li>`).join("")}</ul>` : `<div class="empty">Nenhum uso encontrado.</div>`;
     $$("[data-rel]").forEach(li => li.onclick = () => go(telaRelatorio, li.dataset.rel));
+    $$("[data-apagaruso]").forEach(btn => btn.onclick = async ev => {
+      ev.stopPropagation();
+      const u = usos.find(x => x.id === btn.dataset.apagaruso);
+      if (!confirm(`Apagar DEFINITIVAMENTE o uso do ${u.carroNome} por ${u.motoristaNome} (${fmt(u.inicio)})?\nSaem também as fotos, o vídeo, o trajeto e as ocorrências desse uso. Não dá para desfazer.`)) return;
+      ocupado("Apagando…");
+      const ok = await tentar(async () => { await apagarUso(u.id); return true; });
+      if (!ok) return;
+      usos = usos.filter(x => x.id !== u.id);
+      toast("Uso apagado");
+      desenhar();
+    });
   };
   $("#hBusca").oninput = desenhar;
   desenhar();
+}
+
+// Apaga um uso já encerrado e tudo que é dele: vistorias, fotos/vídeos, trajeto, ocorrências e análise da IA
+async function apagarUso(usoId) {
+  const [vs, oc, ps] = await Promise.all([
+    getDocs(query(collection(db, "vistorias"), where("usoId", "==", usoId))),
+    getDocs(query(collection(db, "ocorrencias"), where("usoId", "==", usoId))),
+    getDocs(collection(db, "usos", usoId, "pontos")),
+  ]);
+  const refs = [];
+  const midia = m => { if (m?.grupo) for (let i = 0; i < (m.partes || 1); i++) refs.push(doc(db, "midias", `${m.grupo}_${i}`)); };
+  vs.docs.forEach(d => { const v = d.data(); (v.fotos || []).forEach(midia); midia(v.video); refs.push(d.ref); });
+  oc.docs.forEach(d => { (d.data().fotos || []).forEach(midia); refs.push(d.ref); });
+  ps.docs.forEach(d => refs.push(d.ref));
+  refs.push(doc(db, "analises", usoId));
+  refs.push(doc(db, "usos", usoId));   // por último
+  for (let i = 0; i < refs.length; i += 400) {
+    const b = writeBatch(db);
+    refs.slice(i, i + 400).forEach(r => b.delete(r));
+    await b.commit();
+  }
+}
+
+function limparHistorico() {
+  const m = modal(`<h2>🧹 Limpar histórico</h2>
+    <p class="muted">Apaga os usos já encerrados, com fotos, vídeos, trajetos, ocorrências e análises da IA. Carros em uso agora não são mexidos. <b>Não dá para desfazer.</b></p>
+    <label for="lhDias">Apagar usos com mais de (dias)</label>
+    <input id="lhDias" type="number" min="0" max="3650" value="90">
+    <p class="muted" style="margin-top:-6px;font-size:12px">Use 0 para apagar TODO o histórico.</p>
+    <button class="btn bad" id="lhOk">Apagar</button>
+    <button class="btn sec" data-fechar>Cancelar</button>`);
+  $("#lhOk", m.el).onclick = async () => {
+    const d = parseInt($("#lhDias", m.el).value, 10);
+    if (!(d >= 0)) return toast("Digite o número de dias");
+    if (!confirm(d === 0 ? "Apagar TODO o histórico de usos? Não dá para desfazer." : `Apagar todos os usos com mais de ${d} dias? Não dá para desfazer.`)) return;
+    m.fechar();
+    let feitos = 0;
+    const ok = await tentar(async () => {
+      ocupado("Procurando usos…");
+      const snap = await getDocs(query(collection(db, "usos"), where("inicio", "<", Timestamp.fromMillis(Date.now() - d * 864e5))));
+      const encerrados = snap.docs.filter(x => x.data().fim != null);
+      for (const x of encerrados) {
+        ocupado(`Apagando… ${feitos} de ${encerrados.length}`);
+        await apagarUso(x.id);
+        feitos++;
+      }
+      return true;
+    }, "Parou no meio. Toque em Limpar de novo para continuar.");
+    if (ok) toast(feitos ? `${feitos} uso(s) apagado(s)` : "Nada para apagar", 4000);
+    go(telaAdmin);
+  };
 }
 
 // As mídias são carregadas depois (data-midia) a partir do Firestore
@@ -2085,10 +2150,20 @@ async function telaRelatorio(usoId) {
   let dist = 0;
   for (let i = 1; i < ps.length; i++) dist += distM(ps[i - 1], ps[i]);
   const kmRodados = ret && dev ? dev.km - ret.km : null;
+  const numero = usoId.slice(0, 8).toUpperCase();
+  const veiculo = `${u.carroNome || ""}${u.placa ? " · " + u.placa : ""}`;
+  // A tabela "folha" repete uma margem em cima e um rodapé em cada página impressa
+  // (o endereço do site que o navegador imprime fica escondido: @page rel no index.html)
   app.innerHTML = `
     <div class="no-print acoes"><button class="btn" id="imprimir" disabled>⏳ Carregando fotos…</button></div>
-    <article class="relatorio">
-      <h1>Relatório de uso do veículo</h1>
+    <article class="relatorio"><table class="folha">
+     <thead><tr><td><div class="folha-topo"></div></td></tr></thead>
+     <tfoot><tr><td><div class="folha-pe"><span>Relatório de uso do veículo · ${esc(veiculo)}</span><span>Nº ${numero}</span></div></td></tr></tfoot>
+     <tbody><tr><td>
+      <div class="rel-cab">
+        <div><div class="rel-marca">Gestão de frota</div><h1>Relatório de uso do veículo</h1><div class="rel-sub">${esc(veiculo)}</div></div>
+        <div class="rel-id">Nº <b>${numero}</b><br>${fmt(u.inicio)}</div>
+      </div>
       <table class="tab">
         <tr><th>Veículo</th><td>${esc(u.carroNome)} ${esc(u.placa || "")}</td></tr>
         <tr><th>Motorista</th><td>${esc(u.motoristaNome)}</td></tr>
@@ -2107,8 +2182,14 @@ async function telaRelatorio(usoId) {
         ${ia ? `<p class="muted">Analisado em ${fmtCompleto(ia.criadoEm)} (${esc(ia.analisadoPor || "")})</p>${avariasIaHtml(ia)}` : `<p class="muted">Ainda não analisado.</p>`}
         ${IA_ATIVA() && ret && dev ? `<button class="btn sec no-print" id="iaRodar">🤖 ${ia ? "Analisar de novo" : "Comparar fotos com a IA"}</button>` : ""}` : ""}
       <p class="muted rodape">Relatório gerado em ${fmtCompleto(Date.now())}</p>
-    </article>`;
-  $("#imprimir").onclick = () => window.print();
+     </td></tr></tbody></table></article>`;
+  $("#imprimir").onclick = () => {
+    // nome do arquivo PDF: "Relatório Polo ABC1234 10-10-2026"
+    const antes = document.title;
+    document.title = `Relatório ${veiculo.replace(" · ", " ")} ${new Date(ms(u.inicio) || Date.now()).toLocaleDateString("pt-BR").replace(/\//g, "-")}`;
+    addEventListener("afterprint", () => { document.title = antes; }, { once: true });
+    window.print();
+  };
   $("#iaRodar") && ($("#iaRodar").onclick = async () => {
     ocupado("🤖 A IA está comparando as fotos… (pode levar até 1 minuto)");
     const a = await tentar(() => analisarAvarias(usoId), "Não foi possível analisar agora.");
